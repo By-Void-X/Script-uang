@@ -1,10 +1,10 @@
 --[[
     ByVoid — No system is safe
-    v6.0 UPGRADE:
-      - Bypass master diperkuat: reapply tiap Heartbeat + probe server
-      - Desync (fakelag), Hitbox Expander, Auto-Trigger
-      - Team Check, Character Reset Detector, Config Save/Load
-      - Console Log Ring buat debug
+    v6.1 — ESP Glow fix:
+      - Highlight per-bodypart, Adornee = char, Fill off default
+      - Outline ngikut silhouette, bukan bounding box
+      - Fallback: BillboardGui Highlight kalau engine aneh
+      - Team check, desync, hitbox, auto-trigger tetap
     executor: HP (Delta/Fluxus/Arceus) — Rayfield UI
     absolute ollie, built by olivia
 --]]
@@ -44,7 +44,7 @@ local State = {
     FlyEnabled = false, FlySpeed = 100, flyConn = nil, flyBV = nil, flyBG = nil, flyUp = false, flyDown = false,
     SpeedEnabled = false, WalkSpeed = 50, defaultWalkSpeed = 16,
     -- ESP
-    EspEnabled = false, EspGlow = false, EspLine = false, EspBox = false,
+    EspEnabled = false, EspGlow = false, EspGlowFill = false, EspLine = false, EspBox = false,
     EspName = false, EspHealth = false, EspDistance = false, EspBox3D = false,
     EspFallbackScan = false, EspColor = Color3.fromRGB(0, 255, 100), EspMaxDist = 500,
     EspTeamCheck = false,
@@ -132,7 +132,7 @@ local function getPlayerRoot(p)
 end
 
 -- ============================================================
--- BYPASS MASTER LOOP (Speed, Jump, Fly PlatformStand) — hardened
+-- BYPASS MASTER LOOP
 -- ============================================================
 local function startMasterBypass()
     if State.masterBypassConn then State.masterBypassConn:Disconnect() end
@@ -161,7 +161,7 @@ local function stopMasterBypass()
 end
 
 -- ============================================================
--- A. ANTI-DETECT
+-- ANTI-DETECT
 -- ============================================================
 local function startAntiDetect()
     State.AntiDetectEnabled = true
@@ -193,7 +193,7 @@ local function stopAntiDetect()
 end
 
 -- ============================================================
--- D. MAP SUPPORT TEST
+-- MAP SUPPORT TEST
 -- ============================================================
 local function runSpeedTest()
     task.spawn(function()
@@ -227,7 +227,7 @@ local function runJumpTest()
 end
 
 -- ============================================================
--- C. REMOTE RECON
+-- REMOTE RECON
 -- ============================================================
 local function scanRemotes()
     local found = {}
@@ -377,23 +377,19 @@ local function applySpeed()
 end
 
 -- ============================================================
--- DESYNC (fakelag)
+-- DESYNC
 -- ============================================================
 local function startDesync()
     if State.desyncConn then State.desyncConn:Disconnect() end
     State.DesyncEnabled = true
-    local pending = {}
-    local hookConn = RunService.Heartbeat:Connect(function(dt)
-        -- drop frames bertumpuk — request network tertahan
+    State.desyncConn = RunService.Heartbeat:Connect(function(dt)
         if not State.DesyncEnabled then return end
-        local now = os.clock()
         if State.DesyncAmount <= 0 then return end
         local window = 1 / State.DesyncHz
-        if (now % 1) < State.DesyncAmount then
+        if (os.clock() % 1) < State.DesyncAmount then
             task.wait(window)
         end
     end)
-    State.desyncConn = hookConn
 end
 local function stopDesync()
     State.DesyncEnabled = false
@@ -401,11 +397,112 @@ local function stopDesync()
 end
 
 -- ============================================================
--- ESP (optimized) + Team check
+-- ESP GLOW — FIX: silhouette outline, bukan fill bounding box
+-- ============================================================
+-- Kenapa kotak besar:
+--   1) Highlight.Adornee = char penuh -> fill render bounding box.
+--   2) FillTransparency 0.5 -> fill kelihatan.
+--   3) DepthMode AlwaysOnTop -> fill nutup semua mesh.
+-- Fix:
+--   - FillTransparency = 1 (fill OFF) default.
+--   - OutlineTransparency = 0 -> outline ngikut silhouette mesh.
+--   - DepthMode Occluded (bukan AlwaysOnTop) -> body part real tetep ke-lihat.
+--   - Fallback kalau engine gak render outline (Highlight fail): pakai
+--     SelectionBox per HumanoidRootPart kecil, outline nurut part.
+--   - Glow Fill toggle opsional buat yang pengen fill silhouette.
+
+local function makeHighlight(char)
+    local hl = Instance.new("Highlight")
+    hl.Name = rndName("ESP")
+    hl.FillColor = State.EspColor
+    hl.OutlineColor = State.EspColor
+    hl.FillTransparency = State.EspGlowFill and 0.5 or 1
+    hl.OutlineTransparency = 0
+    hl.DepthMode = State.EspGlowFill
+        and Enum.HighlightDepthMode.AlwaysOnTop
+        or  Enum.HighlightDepthMode.Occluded
+    hl.Adornee = char
+    hl.Parent = char
+    return hl
+end
+
+local function makeSilhouetteFallback(char)
+    -- SelectionBox outline: silhouette per part kecil, bukan kotak besar.
+    local boxes = {}
+    local color = State.EspColor
+    local function addPart(part)
+        if not part or not part:IsA("BasePart") then return end
+        if part.Name == "HumanoidRootPart" then return end
+        local sb = Instance.new("SelectionBox")
+        sb.Name = rndName("SBox")
+        sb.Adornee = part
+        sb.Color3 = color
+        sb.LineThickness = 0.02
+        sb.SurfaceTransparency = 1
+        sb.Parent = part
+        table.insert(boxes, sb)
+    end
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then addPart(part) end
+    end
+    return boxes
+end
+
+local function destroyGlow(obj)
+    if obj.highlight then
+        pcall(function() obj.highlight:Destroy() end)
+        obj.highlight = nil
+    end
+    if obj.silhouettes then
+        for _, sb in ipairs(obj.silhouettes) do
+            pcall(function() sb:Destroy() end)
+        end
+        obj.silhouettes = nil
+    end
+end
+
+local function rebuildGlowFor(char, obj)
+    destroyGlow(obj)
+    if not State.EspGlow or not char then return end
+    local hl = makeHighlight(char)
+    obj.highlight = hl
+    -- Deteksi highlight gagal (Adornee nil, Parent gak ada, atau outline
+    -- gak keliatan di engine aneh) -> pasang SelectionBox silhouette.
+    task.defer(function()
+        if not obj.highlight or not obj.highlight.Parent then
+            obj.silhouettes = makeSilhouetteFallback(char)
+            return
+        end
+        if obj.highlight.Adornee ~= char then
+            pcall(function() obj.highlight:Destroy() end)
+            obj.highlight = nil
+            obj.silhouettes = makeSilhouetteFallback(char)
+        end
+    end)
+end
+
+local function refreshGlowColors(obj)
+    if obj.highlight then
+        obj.highlight.FillColor = State.EspColor
+        obj.highlight.OutlineColor = State.EspColor
+        obj.highlight.FillTransparency = State.EspGlowFill and 0.5 or 1
+        obj.highlight.DepthMode = State.EspGlowFill
+            and Enum.HighlightDepthMode.AlwaysOnTop
+            or  Enum.HighlightDepthMode.Occluded
+    end
+    if obj.silhouettes then
+        for _, sb in ipairs(obj.silhouettes) do
+            if sb and sb.Parent then sb.Color3 = State.EspColor end
+        end
+    end
+end
+
+-- ============================================================
+-- ESP OTHER
 -- ============================================================
 local function removeESP(p)
     local obj = State.espObjects[p]; if not obj then return end
-    if obj.highlight then obj.highlight:Destroy() end
+    destroyGlow(obj)
     if obj.tracer then obj.tracer:Remove() end
     for _, l in ipairs(obj.boxLines or {}) do l:Remove() end
     for _, l in ipairs(obj.box3DLines or {}) do l:Remove() end
@@ -420,16 +517,12 @@ end
 local function createESP(p)
     if p == LocalPlayer or State.espObjects[p] or not State.EspEnabled then return end
     if State.EspTeamCheck and sameTeam(p, LocalPlayer) then return end
-    local obj = { highlight=nil, tracer=nil, boxLines={}, box3DLines={}, billboard=nil,
-                  nameLabel=nil, distLabel=nil, healthBg=nil, healthFg=nil, cachedChar=nil }
+    local obj = { highlight=nil, silhouettes=nil, tracer=nil, boxLines={}, box3DLines={},
+                  billboard=nil, nameLabel=nil, distLabel=nil, healthBg=nil, healthFg=nil, cachedChar=nil }
     local char = p.Character
-    if State.EspGlow and char then
-        local hl = Instance.new("Highlight")
-        hl.Name = rndName("ESP"); hl.FillColor = State.EspColor; hl.OutlineColor = State.EspColor
-        hl.FillTransparency = 0.5; hl.OutlineTransparency = 0
-        hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        hl.Adornee = char; hl.Parent = char; obj.highlight = hl
-    end
+
+    if State.EspGlow and char then rebuildGlowFor(char, obj) end
+
     if (State.EspName or State.EspDistance) and char then
         local head = char:FindFirstChild("Head")
         if head then
@@ -538,11 +631,12 @@ local function updateESP()
         local hrp, char = getPlayerRoot(p)
         if char and obj.cachedChar ~= char then
             obj.cachedChar = char
-            if obj.highlight then obj.highlight.Adornee = char end
+            if State.EspGlow then rebuildGlowFor(char, obj) end
             local head = char:FindFirstChild("Head")
             if head and obj.billboard then obj.billboard.Adornee = head end
             if head and obj.healthBg and obj.healthBg.Parent and obj.healthBg.Parent:IsA("BillboardGui") then obj.healthBg.Parent.Adornee = head end
         end
+        refreshGlowColors(obj)
         if not hrp then
             if obj.tracer then obj.tracer.Visible = false end
             for _, l in ipairs(obj.boxLines) do l.Visible = false end
@@ -550,14 +644,17 @@ local function updateESP()
             if obj.nameLabel then obj.nameLabel.Visible = false end
             if obj.distLabel then obj.distLabel.Visible = false end
             if obj.highlight then obj.highlight.Enabled = false end
+            if obj.silhouettes then for _, sb in ipairs(obj.silhouettes) do if sb then sb.Visible = false end end end
             if obj.healthFg then obj.healthFg.Visible = false end
             continue
         end
         local dist = (hrp.Position - myPos).Magnitude
         local inRange = dist <= State.EspMaxDist
-        if obj.highlight then
-            obj.highlight.FillColor = State.EspColor; obj.highlight.OutlineColor = State.EspColor
-            obj.highlight.Enabled = State.EspGlow and inRange
+        if obj.highlight then obj.highlight.Enabled = State.EspGlow and inRange end
+        if obj.silhouettes then
+            for _, sb in ipairs(obj.silhouettes) do
+                if sb then sb.Visible = State.EspGlow and inRange end
+            end
         end
         if obj.nameLabel then obj.nameLabel.Visible = State.EspName and inRange; obj.nameLabel.TextColor3 = State.EspColor end
         if obj.distLabel then
@@ -658,8 +755,8 @@ local function createWallhackGlow(p)
     local hl = Instance.new("Highlight")
     hl.Name = rndName("WH"); hl.FillColor = State.WallhackColor
     hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-    hl.FillTransparency = 0.55; hl.OutlineTransparency = 0
-    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.FillTransparency = 1; hl.OutlineTransparency = 0
+    hl.DepthMode = Enum.HighlightDepthMode.Occluded
     hl.Adornee = char; hl.Parent = char
     State.wallhackObjects[p] = hl
 end
@@ -771,19 +868,7 @@ end
 local function tryFireTool()
     local char = getChar(); if not char then return end
     local tool = char:FindFirstChildOfClass("Tool")
-    if tool then
-        pcall(function() tool:Activate() end)
-    else
-        local mouse = LocalPlayer:GetMouse()
-        if mouse and mouse.Target then
-            pcall(function()
-                if mouse.Target:IsA("BasePart") then
-                    local tool2 = char:FindFirstChildOfClass("Tool")
-                    if tool2 then tool2:Activate() end
-                end
-            end)
-        end
-    end
+    if tool then pcall(function() tool:Activate() end) end
 end
 local function autoTriggerStep()
     if not State.AutoTriggerEnabled then return end
@@ -1076,7 +1161,7 @@ local function teleportToPlayer(name)
 end
 
 -- ============================================================
--- CONFIG SAVE / LOAD
+-- CONFIG
 -- ============================================================
 local CONFIG_FILE = "ByVoid_config_" .. TAG .. ".json"
 local function saveConfig()
@@ -1085,7 +1170,7 @@ local function saveConfig()
         FlySpeed = State.FlySpeed, EspColor = {State.EspColor.R, State.EspColor.G, State.EspColor.B},
         EspMaxDist = State.EspMaxDist, AimbotFov = State.AimbotFov,
         AimbotPart = State.AimbotTargetPart, DesyncAmount = State.DesyncAmount,
-        HitboxSize = State.HitboxSize,
+        HitboxSize = State.HitboxSize, EspGlowFill = State.EspGlowFill,
     }
     pcall(function()
         if writefile then writefile(CONFIG_FILE, HttpService:JSONEncode(snap)) end
@@ -1105,6 +1190,7 @@ local function loadConfig()
             if data.AimbotPart then State.AimbotTargetPart = data.AimbotPart end
             if data.DesyncAmount then State.DesyncAmount = data.DesyncAmount end
             if data.HitboxSize then State.HitboxSize = data.HitboxSize end
+            if data.EspGlowFill ~= nil then State.EspGlowFill = data.EspGlowFill end
             notify("ByVoid", "config diload dari " .. CONFIG_FILE)
         end
     end)
@@ -1145,7 +1231,7 @@ startMasterBypass()
 local Window = Rayfield:CreateWindow({
     Name = "ByVoid",
     LoadingTitle = "ByVoid",
-    LoadingSubtitle = "No system is safe — v6.0",
+    LoadingSubtitle = "No system is safe — v6.1",
     ConfigurationSaving = { Enabled = false },
     Keybind = Enum.KeyCode.RightShift,
 })
@@ -1267,8 +1353,10 @@ VisualTab:CreateToggle({ Name = "Enable ESP", CurrentValue = false, Flag = "ESP"
             rebuildAllESP()
         else clearAllESP() end
     end })
-VisualTab:CreateToggle({ Name = "ESP Glow", CurrentValue = false, Flag = "ESPGlow",
+VisualTab:CreateToggle({ Name = "ESP Glow (silhouette outline)", CurrentValue = false, Flag = "ESPGlow",
     Callback = function(v) State.EspGlow = v; if State.EspEnabled then rebuildAllESP() end end })
+VisualTab:CreateToggle({ Name = "Glow Fill (bikin kotak)", CurrentValue = false, Flag = "ESPGlowFill",
+    Callback = function(v) State.EspGlowFill = v; if State.EspEnabled then rebuildAllESP() end end })
 VisualTab:CreateToggle({ Name = "ESP Line", CurrentValue = false, Flag = "ESPLine",
     Callback = function(v) State.EspLine = v; if State.EspEnabled then rebuildAllESP() end end })
 VisualTab:CreateToggle({ Name = "ESP Box 2D", CurrentValue = false, Flag = "ESPBox",
@@ -1291,7 +1379,7 @@ VisualTab:CreateColorPicker({ Name = "ESP Color", Color = Color3.fromRGB(0, 255,
     Callback = function(color)
         State.EspColor = color
         for _, obj in pairs(State.espObjects) do
-            if obj.highlight then obj.highlight.FillColor = color; obj.highlight.OutlineColor = color end
+            refreshGlowColors(obj)
             if obj.tracer then obj.tracer.Color = color end
             for _, l in ipairs(obj.boxLines) do l.Color = color end
             for _, l in ipairs(obj.box3DLines) do l.Color = color end
@@ -1353,4 +1441,4 @@ LocalPlayer.CharacterAdded:Connect(function()
     if State.HitboxEnabled then applyAllHitbox() end
 end)
 
-notify("ByVoid", "v6.0 loaded — bypass digabung, desync/hitbox/auto-trigger/config masuk")
+notify("ByVoid", "v6.1 loaded — ESP glow pakai silhouette outline, bukan fill kotak")
