@@ -1,17 +1,17 @@
 --[[
-    Voxel Assassin v2
-    UI: Fluent
+    Voxel Assassin v3
+    UI: Rayfield (Bisa di-hide, support tombol di HP)
     fitur:
-      1. Auto Cycle TP ke Belakang Musuh (otomatis skip tim sendiri & target mati)
+      1. Target Lock TP (nempel 1 musuh sampai mati, baru pindah)
       2. Custom Offset TP (X, Y, Z)
-      3. SAVE WAYPOINT (Set Poin lokasi, simpan nama, TP balik kapan aja)
-      4. Speed Glitch (geser CFrame tiap frame)
-      5. Manual TP (pake dropdown)
-    executor: HP / PC — Fluent UI
+      3. Save Waypoint / Set Poin
+      4. Speed Glitch
+      5. Manual TP
     absolute ollie, built by olivia
 --]]
 
-local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
@@ -19,25 +19,25 @@ local Camera = Workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 
 local State = {
-    -- Cycle TP
-    CycleEnabled = false,
-    CycleThread = nil,
-    CycleDelay = 0.3,
+    -- Lock TP
+    LockEnabled = false,
+    LockThread = nil,
+    LockDelay = 0.1,
+    LockedTarget = nil,     -- Player object
     OffsetX = 0, OffsetY = 0, OffsetZ = 3,
-    CurrentTarget = nil,
     -- Speed Glitch
     SpeedGlitchEnabled = false,
     SpeedGlitchSpeed = 2,
     SpeedGlitchThread = nil,
     -- Waypoints
-    Waypoints = {}, -- { [nama] = CFrame }
+    Waypoints = {},
     SelectedWaypoint = nil,
     -- Manual TP
     SelectedPlayer = nil,
 }
 
-local function notify(t, c, dur)
-    Fluent:Notify({ Title = t, Content = c, Duration = dur or 4 })
+local function notify(t, c)
+    Rayfield:Notify({ Title = t, Content = c, Duration = 3 })
 end
 local function getChar() return LocalPlayer.Character end
 local function getHRP()
@@ -68,7 +68,8 @@ local function isEnemy(p)
     return true
 end
 
-local function getEnemyList()
+-- cari musuh baru (yang hidup)
+local function findNewTarget()
     local enemies = {}
     for _, p in ipairs(Players:GetPlayers()) do
         if isEnemy(p) then
@@ -78,7 +79,10 @@ local function getEnemyList()
             end
         end
     end
-    return enemies
+    if #enemies > 0 then
+        return enemies[math.random(1, #enemies)]
+    end
+    return nil
 end
 
 -- ============================================================
@@ -93,30 +97,47 @@ local function tpBehindTarget(target)
     return true
 end
 
-local function startCycle()
-    State.CycleEnabled = true
-    if State.CycleThread then task.cancel(State.CycleThread) end
-    State.CycleThread = task.spawn(function()
-        while State.CycleEnabled do
-            local enemies = getEnemyList()
-            if #enemies > 0 then
-                local target = enemies[math.random(1, #enemies)]
-                if target then
-                    tpBehindTarget(target)
-                    State.CurrentTarget = target.Name
+-- ============================================================
+-- TARGET LOCK (Nempel sampai mati)
+-- ============================================================
+local function startLockTP()
+    State.LockEnabled = true
+    State.LockedTarget = nil -- reset
+    
+    if State.LockThread then task.cancel(State.LockThread) end
+    State.LockThread = task.spawn(function()
+        while State.LockEnabled do
+            -- Cek target saat ini: masih idup?
+            local isValid = false
+            if State.LockedTarget then
+                local hum = getPlayerHum(State.LockedTarget)
+                if hum and hum.Health > 0 and State.LockedTarget.Character then
+                    isValid = true
                 end
-            else
-                State.CurrentTarget = "Nggak ada musuh hidup"
             end
-            task.wait(State.CycleDelay)
+
+            -- Kalau target mati / ilang, cari target baru
+            if not isValid then
+                State.LockedTarget = findNewTarget()
+                if State.LockedTarget then
+                    notify("Lock TP", "Target: " .. State.LockedTarget.Name)
+                end
+            end
+
+            -- Eksekusi TP kalau target valid
+            if State.LockedTarget then
+                tpBehindTarget(State.LockedTarget)
+            end
+
+            task.wait(State.LockDelay)
         end
     end)
 end
 
-local function stopCycle()
-    State.CycleEnabled = false
-    State.CurrentTarget = nil
-    if State.CycleThread then task.cancel(State.CycleThread); State.CycleThread = nil end
+local function stopLockTP()
+    State.LockEnabled = false
+    State.LockedTarget = nil
+    if State.LockThread then task.cancel(State.LockThread); State.LockThread = nil end
 end
 
 -- ============================================================
@@ -153,7 +174,6 @@ local function saveWaypoint(name)
     State.Waypoints[name] = hrp.CFrame
     return true
 end
-
 local function loadWaypoint(name)
     local cf = State.Waypoints[name]
     if not cf then return false end
@@ -162,11 +182,7 @@ local function loadWaypoint(name)
     hrp.CFrame = cf
     return true
 end
-
-local function deleteWaypoint(name)
-    State.Waypoints[name] = nil
-end
-
+local function deleteWaypoint(name) State.Waypoints[name] = nil end
 local function getWaypointNames()
     local names = {}
     for n, _ in pairs(State.Waypoints) do table.insert(names, n) end
@@ -184,7 +200,6 @@ local function tpToPlayer(name)
     if not tHRP or not hrp then return end
     hrp.CFrame = tHRP.CFrame * CFrame.new(State.OffsetX, State.OffsetY, State.OffsetZ)
 end
-
 local function getPlayerNames()
     local names = {}
     for _, p in ipairs(Players:GetPlayers()) do
@@ -194,232 +209,134 @@ local function getPlayerNames()
 end
 
 -- ============================================================
--- UI FLUENT
+-- UI RAYFIELD
 -- ============================================================
-local Window = Fluent:CreateWindow({
-    Title = "Voxel Assassin v2",
-    SubTitle = "Cycle TP + Save Poin",
-    TabWidth = 160,
-    Size = UDim2.fromOffset(580, 440),
-    Acrylic = true,
-    Theme = "Dark",
-    MinimizeKey = Enum.KeyCode.RightShift,
+local Window = Rayfield:CreateWindow({
+    Name = "Voxel Assassin v3",
+    LoadingTitle = "Voxel Assassin",
+    LoadingSubtitle = "Target Lock TP",
+    ConfigurationSaving = { Enabled = false },
+    Keybind = Enum.KeyCode.RightShift, -- Bisa di-hide di HP
 })
 
-local Tabs = {
-    Assassin = Window:AddTab({ Title = "Assassin", Icon = "crosshair" }),
-    Waypoint = Window:AddTab({ Title = "Set Poin", Icon = "map-pin" }),
-    Glitch = Window:AddTab({ Title = "Speed Glitch", Icon = "zap" }),
-    Manual = Window:AddTab({ Title = "Manual TP", Icon = "user" }),
-}
-
--- ============================================================
--- TAB: ASSASSIN (CYCLE)
--- ============================================================
-Tabs.Assassin:AddParagraph({
-    Title = "Auto TP Cycle",
-    Content = "TP ke belakang musuh (beda tim) terus-menerus. Kalau target mati, otomatis ganti ke musuh lain.",
-})
-
-Tabs.Assassin:AddToggle("CycleToggle", {
-    Title = "Enable Auto Cycle",
-    Default = false,
+local AssassinTab = Window:CreateTab("Assassin (Lock TP)", 4483362458)
+AssassinTab:CreateSection("Auto Lock TP")
+AssassinTab:CreateToggle({
+    Name = "Enable Lock TP",
+    CurrentValue = false,
+    Flag = "LockToggle",
     Callback = function(v)
-        if v then startCycle() else stopCycle() end
+        if v then startLockTP() else stopLockTP() end
     end,
 })
+AssassinTab:CreateSlider({
+    Name = "TP Delay (detik)",
+    Range = {0.05, 1},
+    Increment = 0.05,
+    Suffix = "s",
+    CurrentValue = 0.1,
+    Flag = "LockDelay",
+    Callback = function(v) State.LockDelay = v end,
+})
+AssassinTab:CreateParagraph({ Title = "Info", Content = "Nempel ke 1 musuh (TP belakang) terus-terusan sampai dia MATI. Baru pindah target." })
 
-Tabs.Assassin:AddSlider("CycleDelaySlider", {
-    Title = "Delay Ganti Target (detik)",
-    Default = 0.3,
-    Min = 0.1,
-    Max = 3,
-    Rounding = 1,
-    Callback = function(v) State.CycleDelay = v end,
+AssassinTab:CreateSection("Offset TP")
+AssassinTab:CreateSlider({
+    Name = "Offset X (kiri/kanan)", Range = {-10, 10}, Increment = 1, Suffix = "X",
+    CurrentValue = 0, Flag = "OffX", Callback = function(v) State.OffsetX = v end,
+})
+AssassinTab:CreateSlider({
+    Name = "Offset Y (atas/bawah)", Range = {-10, 10}, Increment = 1, Suffix = "Y",
+    CurrentValue = 0, Flag = "OffY", Callback = function(v) State.OffsetY = v end,
+})
+AssassinTab:CreateSlider({
+    Name = "Offset Z (belakang/depan)", Range = {-10, 20}, Increment = 1, Suffix = "Z",
+    CurrentValue = 3, Flag = "OffZ", Callback = function(v) State.OffsetZ = v end,
 })
 
-local statusLabel = Tabs.Assassin:AddParagraph({
-    Title = "Live Status",
-    Content = "Target: -",
+local WpTab = Window:CreateTab("Set Poin (Waypoint)", 4483362458)
+WpTab:CreateSection("Save / Load Poin")
+local wpInput = WpTab:CreateInput({
+    Name = "Nama Poin",
+    Placeholder = "contoh: base, spawn, sniper",
+    CurrentValue = "",
+    Flag = "WpInput",
+    RemoveTextAfterFocusLost = false,
 })
-task.spawn(function()
-    while true do
-        task.wait(0.5)
-        local txt = State.CurrentTarget or "Nggak ada musuh / mati"
-        pcall(function()
-            statusLabel:SetDesc("Target: " .. txt)
-        end)
-    end
-end)
-
-Tabs.Assassin:AddDivider()
-
-Tabs.Assassin:AddSlider("OffX", {
-    Title = "Offset X (kiri/kanan)",
-    Default = 0, Min = -10, Max = 10, Rounding = 1,
-    Callback = function(v) State.OffsetX = v end,
-})
-Tabs.Assassin:AddSlider("OffY", {
-    Title = "Offset Y (atas/bawah)",
-    Default = 0, Min = -10, Max = 10, Rounding = 1,
-    Callback = function(v) State.OffsetY = v end,
-})
-Tabs.Assassin:AddSlider("OffZ", {
-    Title = "Offset Z (belakang/depan)",
-    Default = 3, Min = -10, Max = 20, Rounding = 1,
-    Callback = function(v) State.OffsetZ = v end,
-})
-
-Tabs.Assassin:AddParagraph({
-    Title = "Info Offset",
-    Content = "Z positif = belakang target. Z negatif = depan. X = geser samping. Y = naik/turun.",
-})
-
--- ============================================================
--- TAB: WAYPOINT (SET POIN)
--- ============================================================
-Tabs.Waypoint:AddParagraph({
-    Title = "Set Poin (Waypoint)",
-    Content = "Simpan posisi sekarang dengan nama. Klik Load buat TP balik ke titik itu kapan aja.",
-})
-
-Tabs.Waypoint:AddInput("WpName", {
-    Title = "Nama Poin",
-    Placeholder = "contoh: base, spawn, sniper spot",
-    Default = "",
-})
-
-Tabs.Waypoint:AddButton({
-    Title = "Set Poin di Posisi Lo",
-    Description = "Simpan posisi sekarang",
+WpTab:CreateButton({
+    Name = "Set Poin di Posisi Lo",
     Callback = function()
-        local name = Tabs.Waypoint:GetInput("WpName").Value
-        if not name or name == "" then
-            notify("Set Poin", "isi nama dulu, contoh: 'base' atau 'spawn'")
-            return
-        end
-        if saveWaypoint(name) then
-            notify("Set Poin", "Poin '" .. name .. "' disimpan")
-            wpDropdown:SetValues(getWaypointNames())
-            wpDropdown:SetValue(name)
-        else
-            notify("Set Poin", "gagal simpan, karakter belum spawn")
+        if wpInput.Value == "" then notify("Set Poin", "isi nama dulu"); return end
+        if saveWaypoint(wpInput.Value) then
+            notify("Set Poin", "Disimpan: " .. wpInput.Value)
+            wpDropdown:Refresh(getWaypointNames())
         end
     end,
 })
-
 local wpDropdown
-wpDropdown = Tabs.Waypoint:AddDropdown("WpSelect", {
-    Title = "Pilih Poin",
-    Values = getWaypointNames(),
-    Multi = false,
-    Default = 1,
+wpDropdown = WpTab:CreateDropdown({
+    Name = "Pilih Poin",
+    Options = getWaypointNames(),
+    CurrentOption = {},
+    MultipleOptions = false,
+    Flag = "WpSelect",
+    Callback = function(opt) if opt and opt[1] then State.SelectedWaypoint = opt[1] end end,
 })
-wpDropdown:OnChanged(function(v) State.SelectedWaypoint = v end)
-
-Tabs.Waypoint:AddButton({
-    Title = "TP ke Poin",
-    Description = "Teleport ke poin yang dipilih",
+WpTab:CreateButton({
+    Name = "TP ke Poin",
     Callback = function()
-        local name = State.SelectedWaypoint
-        if not name then notify("Set Poin", "pilih poin dulu"); return end
-        if loadWaypoint(name) then
-            notify("Set Poin", "TP ke '" .. name .. "'")
-        else
-            notify("Set Poin", "gagal TP, poin nggak ada / karakter belum spawn")
-        end
+        if not State.SelectedWaypoint then notify("Set Poin", "pilih poin dulu"); return end
+        if loadWaypoint(State.SelectedWaypoint) then notify("Set Poin", "TP ke " .. State.SelectedWaypoint) end
     end,
 })
-
-Tabs.Waypoint:AddButton({
-    Title = "Hapus Poin",
-    Description = "Hapus poin yang dipilih",
+WpTab:CreateButton({
+    Name = "Hapus Poin",
     Callback = function()
-        local name = State.SelectedWaypoint
-        if not name then return end
-        deleteWaypoint(name)
-        wpDropdown:SetValues(getWaypointNames())
-        notify("Set Poin", "Poin '" .. name .. "' dihapus")
+        if not State.SelectedWaypoint then return end
+        deleteWaypoint(State.SelectedWaypoint)
+        wpDropdown:Refresh(getWaypointNames())
+        notify("Set Poin", "Dihapus")
     end,
 })
 
-Tabs.Waypoint:AddButton({
-    Title = "Refresh List Poin",
-    Callback = function()
-        wpDropdown:SetValues(getWaypointNames())
-        notify("Set Poin", "list refreshed")
-    end,
+local GlitchTab = Window:CreateTab("Speed Glitch", 4483362458)
+GlitchTab:CreateSection("Speed Glitch (CFrame)")
+GlitchTab:CreateToggle({
+    Name = "Enable Speed Glitch", CurrentValue = false, Flag = "SGToggle",
+    Callback = function(v) if v then startSpeedGlitch() else stopSpeedGlitch() end end,
 })
+GlitchTab:CreateSlider({
+    Name = "Glitch Speed", Range = {0.5, 20}, Increment = 0.5, Suffix = "studs/frame",
+    CurrentValue = 2, Flag = "SGSpeed", Callback = function(v) State.SpeedGlitchSpeed = v end,
+})
+GlitchTab:CreateParagraph({ Title = "Info", Content = "Geser CFrame, bukan ubah WalkSpeed. Bisa nembus server-authoritative." })
 
-Tabs.Waypoint:AddDivider()
-
-Tabs.Waypoint:AddParagraph({
-    Title = "Info",
-    Content = "Poin disimpan cuma di memori script (hilang kalau lo mati atau rejoin). Kalau lo mau permanen, bilang gw tambahin save ke file.",
-})
-
--- ============================================================
--- TAB: SPEED GLITCH
--- ============================================================
-Tabs.Glitch:AddParagraph({
-    Title = "Speed Glitch",
-    Content = "Nggak ngubah WalkSpeed. Geser CFrame tiap frame. Server nggak bakal reset karena nggak ada velocity aneh.",
-})
-Tabs.Glitch:AddSlider("SGSpeed", {
-    Title = "Glitch Speed (studs/frame)",
-    Default = 2, Min = 0.5, Max = 20, Rounding = 1,
-    Callback = function(v) State.SpeedGlitchSpeed = v end,
-})
-Tabs.Glitch:AddToggle("SGToggle", {
-    Title = "Enable Speed Glitch",
-    Default = false,
-    Callback = function(v)
-        if v then startSpeedGlitch() else stopSpeedGlitch() end
-    end,
-})
-
--- ============================================================
--- TAB: MANUAL TP
--- ============================================================
-Tabs.Manual:AddParagraph({
-    Title = "Manual TP",
-    Content = "Pilih player, klik TP. TP bakal pakai offset yang di-set di tab Assassin.",
-})
-
+local ManualTab = Window:CreateTab("Manual TP", 4483362458)
+ManualTab:CreateSection("TP ke Player")
 local playerDropdown
-playerDropdown = Tabs.Manual:AddDropdown("PlayerSelect", {
-    Title = "Pilih Player",
-    Values = getPlayerNames(),
-    Multi = false,
-    Default = 1,
+playerDropdown = ManualTab:CreateDropdown({
+    Name = "Pilih Player",
+    Options = getPlayerNames(),
+    CurrentOption = {},
+    MultipleOptions = false,
+    Flag = "PlayerSelect",
+    Callback = function(opt) if opt and opt[1] then State.SelectedPlayer = opt[1] end end,
 })
-playerDropdown:OnChanged(function(v) State.SelectedPlayer = v end)
-
-Tabs.Manual:AddButton({
-    Title = "TP ke Player (pake offset)",
+ManualTab:CreateButton({
+    Name = "TP ke Player (pake offset)",
     Callback = function()
         if not State.SelectedPlayer then notify("TP", "pilih player dulu"); return end
         tpToPlayer(State.SelectedPlayer)
     end,
 })
-Tabs.Manual:AddButton({
-    Title = "Refresh Player List",
+ManualTab:CreateButton({
+    Name = "Refresh Player List",
     Callback = function()
-        playerDropdown:SetValues(getPlayerNames())
-        notify("TP", "list refreshed")
+        playerDropdown:Refresh(getPlayerNames())
     end,
 })
 
--- ============================================================
--- AUTO UPDATE LIST
--- ============================================================
-Players.PlayerAdded:Connect(function()
-    task.wait(0.5)
-    playerDropdown:SetValues(getPlayerNames())
-end)
-Players.PlayerRemoving:Connect(function()
-    task.wait(0.5)
-    playerDropdown:SetValues(getPlayerNames())
-end)
+Players.PlayerAdded:Connect(function() task.wait(0.5); playerDropdown:Refresh(getPlayerNames()) end)
+Players.PlayerRemoving:Connect(function() task.wait(0.5); playerDropdown:Refresh(getPlayerNames()) end)
 
-notify("Voxel Assassin v2", "loaded — Assassin + Set Poin siap")
+notify("Voxel Assassin", "v3 loaded — Target Lock siap")
