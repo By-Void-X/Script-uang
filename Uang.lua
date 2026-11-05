@@ -1,256 +1,346 @@
--- Language: Lua | Runtime: Roblox Delta Android
--- VANTA Ultimate Mobile GUI
+-- Universal Mobile Cheat Menu | Untuk Delta Executor
+-- Fitur: Speed, Multi Jump, Fly, ESP, Aimbot Smooth
+-- Kompatibel: HP & PC
 
-local Players = game:GetService("Players")
+local Player = game:GetService("Players").LocalPlayer
+local Mouse = Player:GetMouse()
 local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 
-local player = Players.LocalPlayer
-local CoreGui = game:GetService("CoreGui")
+-- GUI Utama
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "VantaMenu"
+ScreenGui.Parent = game.CoreGui
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
-local old = CoreGui:FindFirstChild("VANTA_ULTIMATE")
-if old then old:Destroy() end
+local MenuFrame = Instance.new("Frame")
+MenuFrame.Name = "MenuFrame"
+MenuFrame.Size = UDim2.new(0, 260, 0, 380)
+MenuFrame.Position = UDim2.new(0.02, 0, 0.5, -190)
+MenuFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+MenuFrame.BorderSizePixel = 2
+MenuFrame.BorderColor3 = Color3.fromRGB(80, 180, 255)
+MenuFrame.Active = true
+MenuFrame.Draggable = true
+MenuFrame.Parent = ScreenGui
 
-local gui = Instance.new("ScreenGui")
-gui.Name = "VANTA_ULTIMATE"
-gui.ResetOnSpawn = false
-gui.Parent = CoreGui
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, 0, 0, 35)
+Title.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+Title.Text = "VANTA MENU"
+Title.TextColor3 = Color3.fromRGB(120, 210, 255)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 16
+Title.Parent = MenuFrame
 
-local function corner(obj, radius)
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, radius)
-    c.Parent = obj
+local ToggleButton = Instance.new("TextButton")
+ToggleButton.Size = UDim2.new(0, 60, 0, 60)
+ToggleButton.Position = UDim2.new(0.93, -30, 0.5, -30)
+ToggleButton.BackgroundColor3 = Color3.fromRGB(60, 180, 255)
+ToggleButton.Text = "M"
+ToggleButton.TextColor3 = Color3.new(1,1,1)
+ToggleButton.Font = Enum.Font.GothamBold
+ToggleButton.TextSize = 24
+ToggleButton.Parent = ScreenGui
+
+local function createToggle(parent, name, pos, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0.85, 0, 0, 38)
+    btn.Position = pos
+    btn.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
+    btn.BorderSizePixel = 1
+    btn.BorderColor3 = Color3.fromRGB(100, 100, 120)
+    btn.Text = name
+    btn.TextColor3 = Color3.new(0.9,0.9,0.9)
+    btn.Font = Enum.Font.Gotham
+    btn.TextSize = 13
+    btn.Parent = parent
+    local state = false
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        btn.BackgroundColor3 = state and Color3.fromRGB(40, 160, 90) or Color3.fromRGB(60, 60, 75)
+        callback(state)
+    end)
+    return btn
 end
 
-local function create(class, props, parent)
-    local obj = Instance.new(class)
-    for k,v in pairs(props) do
-        obj[k] = v
-    end
-    obj.Parent = parent
-    return obj
+local function createSlider(parent, name, pos, min, max, default, callback)
+    local container = Instance.new("Frame")
+    container.Size = UDim2.new(0.85, 0, 0, 50)
+    container.Position = pos
+    container.BackgroundTransparency = 1
+    container.Parent = parent
+    
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1,0,0,20)
+    label.Position = UDim2.new(0,0,0,0,0)
+    label.Text = name .. ": " .. default
+    label.TextColor3 = Color3.new(0.9,0.9,0.9)
+    label.Font = Enum.Font.Gotham
+    label.TextSize = 11
+    label.BackgroundTransparency = 1
+    label.Parent = container
+    
+    local barBg = Instance.new("Frame")
+    barBg.Size = UDim2.new(1,0,0,12)
+    barBg.Position = UDim2.new(0,0,0,28,0)
+    barBg.BackgroundColor3 = Color3.fromRGB(50,50,65)
+    barBg.Parent = container
+    
+    local bar = Instance.new("Frame")
+    bar.Size = UDim2.new((default-min)/(max-min),0,1,0)
+    bar.BackgroundColor3 = Color3.fromRGB(60,180,255)
+    bar.Parent = barBg
+    
+    local value = default
+    local isDragging = false
+    barBg.InputBegan:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then isDragging = true end end)
+    UIS.InputEnded:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then isDragging = false end end)
+    RunService.RenderStepped:Connect(function()
+        if isDragging then
+            local absPos = barBg.AbsolutePosition
+            local absSize = barBg.AbsoluteSize
+            local percent = math.clamp((Mouse.X - absPos.X) / absSize.X, 0, 1)
+            value = min + (max - min) * percent
+            label.Text = name .. ": " .. math.floor(value)
+            bar.Size = UDim2.new(percent, 0, 1, 0)
+            callback(value)
+        end
+    end)
+    return container
 end
 
-local main = create("Frame", {
-    Size = UDim2.fromOffset(270, 390),
-    Position = UDim2.new(.5, -135, .25, 0),
-    BackgroundColor3 = Color3.fromRGB(18, 22, 33),
-    BorderSizePixel = 0
-}, gui)
-corner(main, 14)
-
-local header = create("TextButton", {
-    Size = UDim2.new(1, 0, 0, 45),
-    BackgroundColor3 = Color3.fromRGB(30, 110, 220),
-    Text = "VANTA ULTIMATE  |  MOBILE",
-    TextColor3 = Color3.new(1,1,1),
-    TextSize = 14,
-    Font = Enum.Font.GothamBold
-}, main)
-corner(header, 12)
-
--- Draggable panel
-local dragging = false
-local dragStart, startPos
-
-header.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch
-    or input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = true
-        dragStart = input.Position
-        startPos = main.Position
-    end
+-- Tampil/Sembunyikan Menu
+local menuVisible = true
+ToggleButton.MouseButton1Click:Connect(function()
+    menuVisible = not menuVisible
+    MenuFrame.Visible = menuVisible
 end)
 
-UIS.InputChanged:Connect(function(input)
-    if dragging and (
-        input.UserInputType == Enum.UserInputType.Touch
-        or input.UserInputType == Enum.UserInputType.MouseMovement
-    ) then
-        local d = input.Position - dragStart
-        main.Position = UDim2.new(
-            startPos.X.Scale, startPos.X.Offset + d.X,
-            startPos.Y.Scale, startPos.Y.Offset + d.Y
-        )
-    end
+-- VARIABEL
+local speedEnabled = false
+local speedVal = 16
+local jumpEnabled = false
+local jumpCount = 0
+local maxJumps = 2
+local flyEnabled = false
+local flySpeed = 16
+local espEnabled = false
+local aimEnabled = false
+local aimSmooth = 8
+local aimPart = "Head"
+
+-- FUNGSI FITUR
+
+-- Speed
+createToggle(MenuFrame, "⚡ Speed Hack", UDim2.new(0.075,0,0.12,0), function(state)
+    speedEnabled = state
+end)
+createSlider(MenuFrame, "Kecepatan", UDim2.new(0.075,0,0.20,0), 16, 250, 35, function(val)
+    speedVal = val
 end)
 
-UIS.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch
-    or input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = false
-    end
+-- Multi Jump
+createToggle(MenuFrame, "🦘 Multi Jump", UDim2.new(0.075,0,0.33,0), function(state)
+    jumpEnabled = state
+    jumpCount = 0
 end)
 
--- Floating toggle
-local floating = create("TextButton", {
-    Size = UDim2.fromOffset(50,50),
-    Position = UDim2.new(0,15,.5,0),
-    BackgroundColor3 = Color3.fromRGB(30,120,255),
-    Text = "V",
-    TextColor3 = Color3.new(1,1,1),
-    TextSize = 22
-}, gui)
-corner(floating, 25)
-
-floating.Activated:Connect(function()
-    main.Visible = not main.Visible
-end)
-
-local function humanoid()
-    local char = player.Character
-    return char and char:FindFirstChildOfClass("Humanoid")
-end
-
-local function root()
-    local char = player.Character
-    return char and char:FindFirstChild("HumanoidRootPart")
-end
-
-local states = {
-    speed = false,
-    multiJump = false,
-    fly = false
-}
-
-local function button(label, y, callback)
-    local b = create("TextButton", {
-        Size = UDim2.new(1,-20,0,39),
-        Position = UDim2.fromOffset(10,y),
-        BackgroundColor3 = Color3.fromRGB(42,53,75),
-        TextColor3 = Color3.new(1,1,1),
-        TextSize = 14,
-        Font = Enum.Font.GothamSemibold,
-        Text = label
-    }, main)
-    corner(b,8)
-    b.Activated:Connect(callback)
-    return b
-end
-
-local speedButton
-speedButton = button("SPEED : OFF",55,function()
-    states.speed = not states.speed
-    speedButton.Text = "SPEED : "..(states.speed and "ON" or "OFF")
-    local h = humanoid()
-    if h then h.WalkSpeed = states.speed and 28 or 16 end
-end)
-
-local jumpButton
-jumpButton = button("MULTI JUMP : OFF",100,function()
-    states.multiJump = not states.multiJump
-    jumpButton.Text = "MULTI JUMP : "..(states.multiJump and "ON" or "OFF")
-end)
-
-local flyButton
-flyButton = button("FLY : OFF",145,function()
-    states.fly = not states.fly
-    flyButton.Text = "FLY : "..(states.fly and "ON" or "OFF")
-end)
-
--- Fly controls
-local up = false
-local down = false
-
-local upButton = button("FLY UP ▲",190,function()
-    up = not up
-end)
-
-local downButton = button("FLY DOWN ▼",235,function()
-    down = not down
-end)
-
-local flySpeed = 45
-
-local speedLabel = create("TextLabel", {
-    Size = UDim2.new(1,-20,0,25),
-    Position = UDim2.fromOffset(10,280),
-    BackgroundTransparency = 1,
-    Text = "FLY SPEED",
-    TextColor3 = Color3.new(1,1,1),
-    TextSize = 13
-},main)
-
-local speedSlider = create("TextBox", {
-    Size = UDim2.new(1,-20,0,35),
-    Position = UDim2.fromOffset(10,310),
-    BackgroundColor3 = Color3.fromRGB(42,53,75),
-    Text = "45",
-    TextColor3 = Color3.new(1,1,1),
-    TextSize = 14,
-    ClearTextOnFocus = false
-},main)
-corner(speedSlider,8)
-
-speedSlider.FocusLost:Connect(function()
-    local n = tonumber(speedSlider.Text)
-    if n then
-        flySpeed = math.clamp(n,10,100)
-        speedSlider.Text = tostring(flySpeed)
+-- Fly
+createToggle(MenuFrame, "🕊️ Fly Mode", UDim2.new(0.075,0,0.43,0), function(state)
+    flyEnabled = state
+    if state then
+        Player.Character.Humanoid.PlatformStand = true
     else
-        speedSlider.Text = tostring(flySpeed)
+        Player.Character.Humanoid.PlatformStand = false
     end
 end)
 
--- Movement controller
-local velocity
-local attachment
+local flyBtnUp = Instance.new("TextButton")
+flyBtnUp.Size = UDim2.new(0, 70, 0, 32)
+flyBtnUp.Position = UDim2.new(0.075,0,0.53,0)
+flyBtnUp.BackgroundColor3 = Color3.fromRGB(60, 120, 200)
+flyBtnUp.Text = "⬆️ Naik"
+flyBtnUp.TextColor3 = Color3.new(1,1,1)
+flyBtnUp.Font = Enum.Font.Gotham
+flyBtnUp.TextSize = 11
+flyBtnUp.Parent = MenuFrame
 
-local function stopFly()
-    if velocity then velocity:Destroy() velocity = nil end
-    if attachment then attachment:Destroy() attachment = nil end
+local flyBtnDown = Instance.new("TextButton")
+flyBtnDown.Size = UDim2.new(0, 70, 0, 32)
+flyBtnDown.Position = UDim2.new(0.45,0,0.53,0)
+flyBtnDown.BackgroundColor3 = Color3.fromRGB(60, 120, 200)
+flyBtnDown.Text = "⬇️ Turun"
+flyBtnDown.TextColor3 = Color3.new(1,1,1)
+flyBtnDown.Font = Enum.Font.Gotham
+flyBtnDown.TextSize = 11
+flyBtnDown.Parent = MenuFrame
+
+createSlider(MenuFrame, "Kecepatan Terbang", UDim2.new(0.075,0,0.62,0), 8, 120, 24, function(val)
+    flySpeed = val
+end)
+
+-- ESP
+createToggle(MenuFrame, "👁️ ESP Pemain", UDim2.new(0.075,0,0.74,0), function(state)
+    espEnabled = state
+end)
+
+-- Aimbot
+createToggle(MenuFrame, "🎯 Aimbot Smooth", UDim2.new(0.075,0,0.84,0), function(state)
+    aimEnabled = state
+end)
+createSlider(MenuFrame, "Halus Aimbot", UDim2.new(0.075,0,0.92,0), 1, 20, 8, function(val)
+    aimSmooth = val
+end)
+
+-- LOOP UTAMA
+RunService.RenderStepped:Connect(function()
+    local Char = Player.Character
+    if not Char then return end
+    local Hum = Char:FindFirstChild("Humanoid")
+    local Root = Char:FindFirstChild("HumanoidRootPart")
+    if not Hum or not Root then return end
+
+    -- Speed
+    Hum.WalkSpeed = speedEnabled and speedVal or 16
+
+    -- Multi Jump Logic
+    if jumpEnabled then
+        if Hum.FloorMaterial ~= Enum.Material.Air then
+            jumpCount = 0
+        end
+    end
+
+    -- Fly Logic
+    if flyEnabled then
+        local camCF = workspace.CurrentCamera.CFrame
+        local moveDir = Vector3.new()
+        if UIS:IsKeyDown(Enum.KeyCode.W) then moveDir += camCF.LookVector end
+        if UIS:IsKeyDown(Enum.KeyCode.S) then moveDir -= camCF.LookVector end
+        if UIS:IsKeyDown(Enum.KeyCode.A) then moveDir -= camCF.RightVector end
+        if UIS:IsKeyDown(Enum.KeyCode.D) then moveDir += camCF.RightVector end
+        moveDir = moveDir * Vector3.new(1,0,1).Unit * flySpeed
+        Root.Velocity = moveDir
+    end
+end)
+
+-- Fly Naik/Turun Tombol Sentuh
+flyBtnUp.InputBegan:Connect(function()
+    flyBtnUp.TempConn = RunService.RenderStepped:Connect(function()
+        if flyEnabled and Player.Character then
+            Player.Character.HumanoidRootPart.Velocity += Vector3.new(0, flySpeed * 0.6, 0)
+        end
+    end)
+end)
+flyBtnUp.InputEnded:Connect(function() if flyBtnUp.TempConn then flyBtnUp.TempConn:Disconnect() end end)
+
+flyBtnDown.InputBegan:Connect(function()
+    flyBtnDown.TempConn = RunService.RenderStepped:Connect(function()
+        if flyEnabled and Player.Character then
+            Player.Character.HumanoidRootPart.Velocity += Vector3.new(0, -flySpeed * 0.6, 0)
+        end
+    end)
+end)
+flyBtnDown.InputEnded:Connect(function() if flyBtnDown.TempConn then flyBtnDown.TempConn:Disconnect() end end)
+
+-- Multi Jump Tekan
+UIS.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        if input.KeyCode == Enum.KeyCode.Space and jumpEnabled and Player.Character then
+            local Hum = Player.Character:FindFirstChild("Humanoid")
+            if Hum and jumpCount < maxJumps then
+                Hum.Velocity = Vector3.new(Hum.Velocity.X, 48, Hum.Velocity.Z)
+                jumpCount += 1
+            end
+        end
+    end
+    -- Tombol sentuh lompat untuk HP
+    if input.UserInputType == Enum.UserInputType.Touch and jumpEnabled and Player.Character then
+        local Hum = Player.Character:FindFirstChild("Humanoid")
+        if Hum and jumpCount < maxJumps then
+            Hum.Velocity = Vector3.new(Hum.Velocity.X, 48, Hum.Velocity.Z)
+            jumpCount += 1
+        end
+    end
+end)
+
+-- ESP
+local ESPObjects = {}
+RunService.RenderStepped:Connect(function()
+    for _, plr in ipairs(game:GetService("Players"):GetPlayers()) do
+        if plr ~= Player and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") then
+            local Root = plr.Character.HumanoidRootPart
+            local Head = plr.Character:FindFirstChild("Head")
+            if espEnabled then
+                if not ESPObjects[plr.UserId] then
+                    local billboard = Instance.new("BillboardGui")
+                    billboard.AlwaysOnTop = true
+                    billboard.Size = UDim2.new(0, 150, 0, 40)
+                    billboard.Parent = Root
+                    local txt = Instance.new("TextLabel")
+                    txt.BackgroundTransparency = 1
+                    txt.Size = UDim2.new(1,0,1,0)
+                    txt.Text = plr.Name
+                    txt.TextColor3 = Color3.fromRGB(255,80,80)
+                    txt.Font = Enum.Font.GothamBold
+                    txt.TextSize = 12
+                    txt.Parent = billboard
+                    ESPObjects[plr.UserId] = billboard
+                end
+            else
+                if ESPObjects[plr.UserId] then
+                    ESPObjects[plr.UserId]:Destroy()
+                    ESPObjects[plr.UserId] = nil
+                end
+            end
+        else
+            if ESPObjects[plr.UserId] then
+                ESPObjects[plr.UserId]:Destroy()
+                ESPObjects[plr.UserId] = nil
+            end
+        end
+    end
+end)
+
+-- Aimbot Smooth
+local function GetClosestPlayer()
+    local closest, dist = nil, math.huge
+    local cam = Workspace.CurrentCamera
+    for _, plr in ipairs(game:GetService("Players"):GetPlayers()) do
+        if plr ~= Player and plr.Character and plr.Character:FindFirstChild(aimPart) then
+            local part = plr.Character[aimPart]
+            local pos, vis = cam:WorldToViewportPoint(part.Position)
+            if vis then
+                local mDist = (Vector2.new(Mouse.X, Mouse.Y) - Vector2.new(pos.X, pos.Y)).Magnitude
+                if mDist < dist then
+                    dist = mDist
+                    closest = part
+                end
+            end
+        end
+    end
+    return closest
 end
 
-RunService.Heartbeat:Connect(function()
-    local h = humanoid()
-    local r = root()
-
-    if not h or not r then
-        stopFly()
-        return
-    end
-
-    if states.speed then
-        h.WalkSpeed = 28
-    end
-
-    if states.fly then
-        if not attachment then
-            attachment = Instance.new("Attachment")
-            attachment.Parent = r
-        end
-
-        if not velocity then
-            velocity = Instance.new("LinearVelocity")
-            velocity.Attachment0 = attachment
-            velocity.RelativeTo = Enum.ActuatorRelativeTo.World
-            velocity.MaxForce = math.huge
-            velocity.Parent = r
-        end
-
-        local direction = h.MoveDirection * flySpeed
-        local vertical = (up and flySpeed or 0) - (down and flySpeed or 0)
-        velocity.VectorVelocity = direction + Vector3.new(0,vertical,0)
-        h:ChangeState(Enum.HumanoidStateType.Physics)
-    else
-        stopFly()
+RunService.RenderStepped:Connect(function()
+    if not aimEnabled then return end
+    local target = GetClosestPlayer()
+    if target then
+        local cam = Workspace.CurrentCamera
+        local tPos = CFrame.new(cam.CFrame.Position, target.Position)
+        cam.CFrame = cam.CFrame:Lerp(tPos, 1 / aimSmooth)
     end
 end)
 
-UIS.JumpRequest:Connect(function()
-    if states.multiJump then
-        local h = humanoid()
-        if h then
-            h:ChangeState(Enum.HumanoidStateType.Jumping)
-        end
+-- Bersihkan saat ulang masuk
+Player.CharacterAdded:Connect(function()
+    jumpCount = 0
+    if flyEnabled then
+        flyEnabled = false
     end
 end)
 
-player.CharacterAdded:Connect(function(char)
-    stopFly()
-    task.wait(0.5)
-    local h = char:WaitForChild("Humanoid")
-    h.WalkSpeed = states.speed and 28 or 16
-end)
-
-print("VANTA ULTIMATE MOBILE LOADED")
+print("[Vanta Menu] Dimuat sukses! Tekan tombol M untuk buka/tutup menu")
