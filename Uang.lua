@@ -1,6 +1,12 @@
 --═════════════════════════════════════════════════════
---  🎯 AIMBOT SMOOTH (Stand-Alone)
+--  🎯 SMOOTH AIMBOT — STABLE EDITION
 --  Delta Executor Compatible (Mobile/HP)
+--
+--  • delta-time damping → gerakan sama di 30/60/120 fps
+--  • deadzone → gak ada jitter micro-movement
+--  • target lock + hysteresis → gak flick antar player
+--  • max turn speed → gak ada snap instan yang kelihatan bot
+--  • auto drop target mati / off-screen / leave
 --═════════════════════════════════════════════════════
 
 local Players          = game:GetService("Players")
@@ -11,83 +17,192 @@ local CoreGui          = game:GetService("CoreGui")
 local LocalPlayer = Players.LocalPlayer
 local Camera      = workspace.CurrentCamera
 
---═══════════ SETTING ═══════════
-local Aimbot      = false
-local AimSmooth   = 0.25   -- 0.05 = sangat smooth, 1 = snap langsung
-local AimFOV      = 150    -- radius FOV (pixel)
-local ShowFOV     = true   -- tampilkan lingkaran FOV
-local TargetPart  = "Head" -- "Head" = headshot, ganti "HumanoidRootPart" = body
+--═══════════ CONFIG ═══════════
+local Smoothness   = 0.35    -- 0.05 = super smooth, 1 = instan (jangan 1, gak stabil)
+local FOV          = 120     -- radius pixel
+local Deadzone     = 0.8     -- derajat; di bawah ini gak digerakkan (anti-jitter)
+local MaxTurnSpeed = 240     -- derajat per detik (clamp biar gak snap)
+local TargetPart   = "Head"  -- "Head" / "HumanoidRootPart" / "Torso"
+local TeamCheck    = false   -- true = gak nembak teammate
+local AimMode      = "Always" -- "Always" | "HoldKey" (tombol aim muncul di layar)
+local ShowFOV      = true
+local ShowLine     = true
 
--- support Drawing? (delta support, tapi cek dulu biar aman)
+-- internal (jangan diutak-atik)
+local currentTarget = nil
+local fovCircle, aimLine
+local holdAiming = false
+
+--═══════════ DRAWING SETUP ═══════════
 local DrawingOK = pcall(function()
     local d = Drawing.new("Circle")
     d:Remove()
 end)
 
---═══════════ FOV CIRCLE ═══════════
-local fovCircle
 if DrawingOK then
     fovCircle = Drawing.new("Circle")
-    fovCircle.Thickness = 1.5
-    fovCircle.Color = Color3.fromRGB(255, 255, 255)
-    fovCircle.Filled = false
-    fovCircle.Transparency = 0.6
-    fovCircle.NumSides = 60
-    fovCircle.Visible = false
+    fovCircle.Thickness   = 1.5
+    fovCircle.Color       = Color3.fromRGB(255, 255, 255)
+    fovCircle.Filled      = false
+    fovCircle.Transparency = 0.5
+    fovCircle.NumSides    = 60
+    fovCircle.Visible     = false
+
+    aimLine = Drawing.new("Line")
+    aimLine.Thickness = 1
+    aimLine.Color     = Color3.fromRGB(255, 50, 50)
+    aimLine.Visible   = false
 end
 
---═══════════ CARI TARGET TERDEKAT DALAM FOV ═══════════
-local function getNearestTarget()
-    local screenCenter = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
-    local nearest, nearestDist = nil, math.huge
+--═══════════ VALIDASI TARGET ═══════════
+local function isTargetValid(plr)
+    if not plr or not plr.Parent then return false end
+    if plr == LocalPlayer then return false end
+
+    local char = plr.Character
+    if not char then return false end
+
+    local part = char:FindFirstChild(TargetPart)
+    local hum  = char:FindFirstChildOfClass("Humanoid")
+    if not part or not hum or hum.Health <= 0 then return false end
+
+    if TeamCheck and plr.Team == LocalPlayer.Team then return false end
+
+    local pos, onScreen = Camera:WorldToViewportPoint(part.Position)
+    if not onScreen then return false end
+
+    return true, pos
+end
+
+--═══════════ SCAN TARGET BARU ═══════════
+local function scanNewTarget()
+    local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+    local best, bestDist = nil, math.huge
 
     for _, plr in pairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer and plr.Character then
-            local part = plr.Character:FindFirstChild(TargetPart)
-            local hum  = plr.Character:FindFirstChildOfClass("Humanoid")
-            if part and hum and hum.Health > 0 then
-                local pos, onScreen = Camera:WorldToViewportPoint(part.Position)
-                if onScreen then
-                    local dist = (Vector2.new(pos.X, pos.Y) - screenCenter).Magnitude
-                    if dist < AimFOV and dist < nearestDist then
-                        nearest = part
-                        nearestDist = dist
-                    end
-                end
+        local valid, pos = isTargetValid(plr)
+        if valid then
+            local dist = (Vector2.new(pos.X, pos.Y) - center).Magnitude
+            if dist < FOV and dist < bestDist then
+                best = plr
+                bestDist = dist
             end
         end
     end
 
-    return nearest
+    return best
 end
 
---═══════════ LOOP AIMBOT ═══════════
-RunService.RenderStepped:Connect(function()
-    -- render FOV circle
+--═══════════ AIM STEP (CORE — delta-time damping) ═══════════
+local function aimStep(dt)
+    -- 1) validasi target sekarang, drop kalau invalid
+    local valid = isTargetValid(currentTarget)
+    if not valid then
+        currentTarget = scanNewTarget()
+    end
+
+    -- hysteresis: target lama boleh sedikit keluar FOV tanpa langsung di-drop
+    -- (cuma scan ulang kalau bener-bener udah jauh)
+    if currentTarget then
+        local part = currentTarget.Character and currentTarget.Character:FindFirstChild(TargetPart)
+        if part then
+            local pos = Camera:WorldToViewportPoint(part.Position)
+            local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+            local dist = (Vector2.new(pos.X, pos.Y) - center).Magnitude
+            if dist > FOV * 1.5 then
+                currentTarget = scanNewTarget()
+            end
+        end
+    end
+
+    if not currentTarget then
+        if aimLine then aimLine.Visible = false end
+        return
+    end
+
+    -- 2) hitung arah target
+    local part = currentTarget.Character:FindFirstChild(TargetPart)
+    if not part then return end
+
+    local camPos = Camera.CFrame.Position
+    local targetPos = part.Position
+    local goalDir = (targetPos - camPos).Unit
+    local curDir  = Camera.CFrame.LookVector
+
+    -- sudut error saat ini (derajat)
+    local dot = math.clamp(curDir:Dot(goalDir), -1, 1)
+    local angle = math.deg(math.acos(dot))
+
+    -- 3) deadzone — biarkan kalau udah hampir pas (anti jitter)
+    if angle < Deadzone then
+        if aimLine and ShowLine then
+            local pos = Camera:WorldToViewportPoint(targetPos)
+            aimLine.From = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+            aimLine.To   = Vector2.new(pos.X, pos.Y)
+            aimLine.Visible = true
+        end
+        return
+    end
+
+    -- 4) damping berbasis delta-time → framerate independent
+    --    di 30fps ataupun 120fps hasilnya konsisten
+    local alpha = 1 - Smoothness^(dt * 60)
+
+    -- 5) clamp step biar gak ada snap lebih dari MaxTurnSpeed
+    local maxStep = MaxTurnSpeed * dt
+    local stepAngle = math.min(angle * alpha, maxStep)
+
+    -- interpolasi arah kamera
+    local t = math.clamp(stepAngle / angle, 0, 1)
+    local newDir = curDir:Lerp(goalDir, t)
+    if newDir.Magnitude > 0 then
+        newDir = newDir.Unit
+        Camera.CFrame = CFrame.lookAt(camPos, camPos + newDir)
+    end
+
+    -- 6) garis penanda target aktif
+    if aimLine and ShowLine then
+        local pos = Camera:WorldToViewportPoint(targetPos)
+        aimLine.From = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+        aimLine.To   = Vector2.new(pos.X, pos.Y)
+        aimLine.Visible = true
+    end
+end
+
+--═══════════ MAIN LOOP ═══════════
+RunService.RenderStepped:Connect(function(dt)
+    -- FOV circle
     if fovCircle then
-        if Aimbot and ShowFOV then
-            fovCircle.Radius = AimFOV
+        if ShowFOV and AimMode == "Always" or (ShowFOV and AimMode == "HoldKey" and holdAiming) then
+            fovCircle.Radius   = FOV
             fovCircle.Position = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
-            fovCircle.Visible = true
+            fovCircle.Visible  = true
         else
             fovCircle.Visible = false
         end
     end
 
-    if not Aimbot then return end
-
-    local target = getNearestTarget()
-    if target then
-        local targetCFrame = CFrame.new(Camera.CFrame.Position, target.Position)
-        Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, AimSmooth)
+    -- jalankan aim sesuai mode
+    if AimMode == "Always" then
+        aimStep(dt)
+    elseif AimMode == "HoldKey" and holdAiming then
+        aimStep(dt)
+    else
+        currentTarget = nil
+        if aimLine then aimLine.Visible = false end
     end
+end)
+
+-- reset target saat respawn / mati biar gak nyangkut
+LocalPlayer.CharacterAdded:Connect(function()
+    currentTarget = nil
 end)
 
 --═══════════════════════════════════════════
 --                     UI
 --═══════════════════════════════════════════
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "AimbotUI"
+ScreenGui.Name = "StableAimbot"
 ScreenGui.ResetOnSpawn = false
 
 local ok = pcall(function() ScreenGui.Parent = CoreGui end)
@@ -96,108 +211,84 @@ if not ok then
 end
 
 local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 220, 0, 230)
-Main.Position = UDim2.new(0, 15, 0.3, 0)
-Main.BackgroundColor3 = Color3.fromRGB(18, 18, 26)
+Main.Size = UDim2.new(0, 200, 0, 250)
+Main.Position = UDim2.new(0, 12, 0.3, 0)
+Main.BackgroundColor3 = Color3.fromRGB(15, 15, 22)
 Main.BorderSizePixel = 0
 Main.Active = true
 Main.Parent = ScreenGui
 
-local mainCorner = Instance.new("UICorner")
-mainCorner.CornerRadius = UDim.new(0, 10)
-mainCorner.Parent = Main
-
-local mainStroke = Instance.new("UIStroke")
-mainStroke.Color = Color3.fromRGB(255, 60, 60)
-mainStroke.Thickness = 1.5
-mainStroke.Transparency = 0.5
-mainStroke.Parent = Main
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 10)
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(255, 60, 60)
+stroke.Thickness = 1.5
+stroke.Transparency = 0.4
+stroke.Parent = Main
 
 local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, 0, 0, 34)
+Title.Size = UDim2.new(1, 0, 0, 30)
 Title.BackgroundTransparency = 1
-Title.Text = "🎯 AIMBOT"
-Title.TextColor3 = Color3.fromRGB(255, 60, 60)
-Title.TextSize = 16
+Title.Text = "🎯 AIMBOT — STABLE"
+Title.TextColor3 = Color3.fromRGB(255, 70, 70)
+Title.TextSize = 14
 Title.Font = Enum.Font.GothamBold
 Title.Parent = Main
 
--- Toggle ON/OFF
-local toggleBtn = Instance.new("TextButton")
-toggleBtn.Size = UDim2.new(1, -20, 0, 34)
-toggleBtn.Position = UDim2.new(0, 10, 0, 42)
-toggleBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
-toggleBtn.Text = "  Aimbot:  OFF"
-toggleBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-toggleBtn.TextSize = 13
-toggleBtn.Font = Enum.Font.Gotham
-toggleBtn.TextXAlignment = Enum.TextXAlignment.Left
-toggleBtn.Parent = Main
+-- status target
+local StatusLabel = Instance.new("TextLabel")
+StatusLabel.Size = UDim2.new(1, 0, 0, 16)
+StatusLabel.Position = UDim2.new(0, 0, 0, 30)
+StatusLabel.BackgroundTransparency = 1
+StatusLabel.Text = "target: —"
+StatusLabel.TextColor3 = Color3.fromRGB(140, 140, 150)
+StatusLabel.TextSize = 11
+StatusLabel.Font = Enum.Font.Gotham
+StatusLabel.Parent = Main
 
-local tCorner = Instance.new("UICorner")
-tCorner.CornerRadius = UDim.new(0, 6)
-tCorner.Parent = toggleBtn
-
-toggleBtn.MouseButton1Click:Connect(function()
-    Aimbot = not Aimbot
-    toggleBtn.Text = "  Aimbot:  " .. (Aimbot and "ON" or "OFF")
-    toggleBtn.BackgroundColor3 = Aimbot and Color3.fromRGB(160, 30, 30) or Color3.fromRGB(35, 35, 48)
-    toggleBtn.TextColor3 = Aimbot and Color3.new(1, 1, 1) or Color3.fromRGB(200, 200, 200)
-end)
-
---═══════════ SLIDER ═══════════
-local function makeSlider(label, min, max, default, posY, callback)
+--═══════════ SLIDER BUILDER ═══════════
+local function makeSlider(label, min, max, default, posY, isFloat, callback)
     local container = Instance.new("Frame")
-    container.Size = UDim2.new(1, -20, 0, 40)
-    container.Position = UDim2.new(0, 10, 0, posY)
-    container.BackgroundColor3 = Color3.fromRGB(28, 28, 40)
+    container.Size = UDim2.new(1, -16, 0, 38)
+    container.Position = UDim2.new(0, 8, 0, posY)
+    container.BackgroundColor3 = Color3.fromRGB(26, 26, 36)
     container.BorderSizePixel = 0
     container.Parent = Main
+    Instance.new("UICorner", container).CornerRadius = UDim.new(0, 6)
 
-    local cc = Instance.new("UICorner")
-    cc.CornerRadius = UDim.new(0, 6)
-    cc.Parent = container
-
-    local label2 = Instance.new("TextLabel")
-    label2.Size = UDim2.new(1, -12, 0, 16)
-    label2.Position = UDim2.new(0, 8, 0, 2)
-    label2.BackgroundTransparency = 1
-    label2.Text = label .. ": " .. default
-    label2.TextColor3 = Color3.fromRGB(230, 230, 230)
-    label2.TextSize = 12
-    label2.Font = Enum.Font.Gotham
-    label2.TextXAlignment = Enum.TextXAlignment.Left
-    label2.Parent = container
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -12, 0, 15)
+    lbl.Position = UDim2.new(0, 8, 0, 2)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = label .. ": " .. default
+    lbl.TextColor3 = Color3.fromRGB(220, 220, 220)
+    lbl.TextSize = 11
+    lbl.Font = Enum.Font.Gotham
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Parent = container
 
     local bar = Instance.new("Frame")
-    bar.Size = UDim2.new(1, -16, 0, 6)
+    bar.Size = UDim2.new(1, -16, 0, 5)
     bar.Position = UDim2.new(0, 8, 0, 24)
-    bar.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
+    bar.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
     bar.BorderSizePixel = 0
     bar.Parent = container
-
-    local barCorner = Instance.new("UICorner")
-    barCorner.CornerRadius = UDim.new(1, 0)
-    barCorner.Parent = bar
+    Instance.new("UICorner", bar).CornerRadius = UDim.new(1, 0)
 
     local fill = Instance.new("Frame")
-    fill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
+    fill.Size = UDim2.new((default - min)/(max - min), 0, 1, 0)
     fill.BackgroundColor3 = Color3.fromRGB(255, 60, 60)
     fill.BorderSizePixel = 0
     fill.Parent = bar
-
-    local fillCorner = Instance.new("UICorner")
-    fillCorner.CornerRadius = UDim.new(1, 0)
-    fillCorner.Parent = fill
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
 
     local dragging = false
     local function update(input)
         local rel = math.clamp((input.Position.X - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
-        local value = min + (max - min) * rel
-        value = math.floor(value * 100 + 0.5) / 100  -- 2 desimal
+        local v = min + (max - min) * rel
+        v = isFloat and (math.floor(v * 100 + 0.5) / 100) or math.floor(v + 0.5)
         fill.Size = UDim2.new(rel, 0, 1, 0)
-        label2.Text = label .. ": " .. value
-        callback(value)
+        lbl.Text = label .. ": " .. v
+        callback(v)
     end
 
     bar.InputBegan:Connect(function(input)
@@ -218,35 +309,64 @@ local function makeSlider(label, min, max, default, posY, callback)
     end)
 end
 
--- Slider Smooth (0.05 - 1)
-makeSlider("Smooth", 0.05, 1, AimSmooth, 84, function(v)
-    AimSmooth = v
+--═══════════ TOGGLE ═══════════
+local enabled = false
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(1, -16, 0, 30)
+toggleBtn.Position = UDim2.new(0, 8, 0, 50)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
+toggleBtn.Text = "  Aimbot:  OFF"
+toggleBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+toggleBtn.TextSize = 12
+toggleBtn.Font = Enum.Font.Gotham
+toggleBtn.TextXAlignment = Enum.TextXAlignment.Left
+toggleBtn.Parent = Main
+Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 6)
+
+toggleBtn.MouseButton1Click:Connect(function()
+    enabled = not enabled
+    AimMode = enabled and "Always" or "HoldKey"
+    toggleBtn.Text = "  Aimbot:  " .. (enabled and "ON" or "OFF")
+    toggleBtn.BackgroundColor3 = enabled and Color3.fromRGB(160, 30, 30) or Color3.fromRGB(35, 35, 48)
+    toggleBtn.TextColor3 = enabled and Color3.new(1, 1, 1) or Color3.fromRGB(200, 200, 200)
+    if not enabled then currentTarget = nil end
 end)
 
--- Slider FOV (50 - 500)
-makeSlider("FOV", 50, 500, AimFOV, 128, function(v)
-    AimFOV = math.floor(v)
+-- sliders
+makeSlider("Smooth", 0.05, 1, Smoothness, 88, true, function(v) Smoothness = v end)
+makeSlider("FOV", 50, 400, FOV, 130, false, function(v) FOV = v end)
+makeSlider("MaxTurn", 60, 720, MaxTurnSpeed, 172, false, function(v) MaxTurnSpeed = v end)
+
+-- team check toggle
+local teamBtn = Instance.new("TextButton")
+teamBtn.Size = UDim2.new(1, -16, 0, 26)
+teamBtn.Position = UDim2.new(0, 8, 0, 214)
+teamBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
+teamBtn.Text = "  Team Check:  OFF"
+teamBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+teamBtn.TextSize = 11
+teamBtn.Font = Enum.Font.Gotham
+teamBtn.TextXAlignment = Enum.TextXAlignment.Left
+teamBtn.Parent = Main
+Instance.new("UICorner", teamBtn).CornerRadius = UDim.new(0, 6)
+
+teamBtn.MouseButton1Click:Connect(function()
+    TeamCheck = not TeamCheck
+    teamBtn.Text = "  Team Check:  " .. (TeamCheck and "ON" or "OFF")
+    teamBtn.BackgroundColor3 = TeamCheck and Color3.fromRGB(30, 90, 160) or Color3.fromRGB(35, 35, 48)
 end)
 
--- Toggle FOV circle visible
-local fovBtn = Instance.new("TextButton")
-fovBtn.Size = UDim2.new(1, -20, 0, 32)
-fovBtn.Position = UDim2.new(0, 10, 0, 174)
-fovBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
-fovBtn.Text = "  ⭕ FOV Circle:  ON"
-fovBtn.TextColor3 = Color3.new(1, 1, 1)
-fovBtn.TextSize = 13
-fovBtn.Font = Enum.Font.Gotham
-fovBtn.TextXAlignment = Enum.TextXAlignment.Left
-fovBtn.Parent = Main
-
-local fCorner = Instance.new("UICorner")
-fCorner.CornerRadius = UDim.new(0, 6)
-fCorner.Parent = fovBtn
-
-fovBtn.MouseButton1Click:Connect(function()
-    ShowFOV = not ShowFOV
-    fovBtn.Text = "  ⭕ FOV Circle:  " .. (ShowFOV and "ON" or "OFF")
+-- status updater
+task.spawn(function()
+    while task.wait(0.25) do
+        if currentTarget and currentTarget.Parent then
+            StatusLabel.Text = "🎯 " .. currentTarget.Name
+            StatusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+        else
+            StatusLabel.Text = enabled and "cari target..." or "target: —"
+            StatusLabel.TextColor3 = Color3.fromRGB(140, 140, 150)
+        end
+    end
 end)
 
 --═══════════ DRAG ═══════════
@@ -278,4 +398,4 @@ do
     end)
 end
 
-print("═══ Aimbot loaded ═══")
+print("═══ Stable Aimbot loaded ═══")
