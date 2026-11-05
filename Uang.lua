@@ -1,8 +1,10 @@
 --[[
     ByVoid — No system is safe
-    v5.3 AIMBOT SWAPPED:
-      - Aimbot diganti pake logic Universal Hub v2 (smooth lerp, FOV circle, head-only)
-      - Semua fitur lain UTUH: speed, multi jump, fly, esp, noclip, wallhack, spinbot,
+    v5.4 AIMBOT SHOOT-TRIGGER:
+      - Aimbot trigger on shoot: kamera bebas total selama gak nembak
+      - Snap instan ke target dalam FOV pas tap tombol tembak
+      - Hook: Tool.Activated + mouse click + touch fire button
+      - Fitur lain UTUH: speed, multi jump, fly, esp, noclip, wallhack, spinbot,
         god mode, fullbright, low graphics, pov, tp, bypass framework
     executor: HP (Delta/Fluxus/Arceus) — Rayfield UI
     absolute ollie, built by olivia
@@ -50,11 +52,13 @@ local State = {
     FullbrightEnabled = false, fbThread = nil, fbSaved = nil,
     PovEnabled = false, PovValue = 70, defaultFOV = 70,
     LowGfxEnabled = false, lowGfxThread = nil, lowGfxSaved = nil,
-    -- AIMBOT (Universal Hub v2 logic)
+    -- AIMBOT (shoot-trigger mode)
     AimbotEnabled = false, AimbotTargetPart = "Head",
-    AimbotFov = 150, AimSmooth = 0.25,
-    ShowFov = true,
+    AimbotFov = 150, ShowFov = true,
     AimbotRingColor = Color3.fromRGB(255, 255, 255),
+    ShootLockUntil = 0,
+    ShootLockDuration = 0.15,
+    SnapOnShoot = true,
     fovCircle = nil,
     -- BYPASS FRAMEWORK
     masterBypassConn = nil,
@@ -875,7 +879,8 @@ local function stopLowGfx()
 end
 
 -- ============================================================
--- AIMBOT (Universal Hub v2 logic — smooth lerp + FOV circle)
+-- AIMBOT (SHOOT-TRIGGER MODE)
+-- kamera bebas total selama gak nembak, snap pas tembak
 -- ============================================================
 local function createFovCircle()
     if State.fovCircle then return end
@@ -902,6 +907,93 @@ local function stopAimbot()
     State.AimbotEnabled = false
     if State.fovCircle then State.fovCircle.Visible = false end
 end
+
+-- cari target terdekat di dalam FOV
+local function findNearestTarget()
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    local nearest, nearestDist = nil, math.huge
+    for _, plr in pairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then
+            local part = plr.Character:FindFirstChild(State.AimbotTargetPart)
+            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            if part and hum and hum.Health > 0 then
+                local pos, onScreen = Camera:WorldToViewportPoint(part.Position)
+                if onScreen then
+                    local dist = (Vector2.new(pos.X, pos.Y) - screenCenter).Magnitude
+                    if dist < State.AimbotFov and dist < nearestDist then
+                        nearest = part
+                        nearestDist = dist
+                    end
+                end
+            end
+        end
+    end
+    return nearest, nearestDist
+end
+
+-- trigger nembak
+local function onShootTriggered()
+    if not State.AimbotEnabled then return end
+    State.ShootLockUntil = os.clock() + State.ShootLockDuration
+    if State.SnapOnShoot then
+        local target = findNearestTarget()
+        if target then
+            Camera.CFrame = CFrame.new(Camera.CFrame.Position, target.Position)
+        end
+    end
+end
+
+-- hook tool activated (senjata)
+local function hookTool(tool)
+    if not tool:IsA("Tool") then return end
+    tool.Activated:Connect(function() onShootTriggered() end)
+end
+local function hookCurrentTool()
+    local char = getChar()
+    if char then
+        for _, obj in ipairs(char:GetChildren()) do hookTool(obj) end
+        char.ChildAdded:Connect(function(c) hookTool(c) end)
+    end
+end
+hookCurrentTool()
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(1); hookCurrentTool()
+end)
+
+-- mouse left-click (PC)
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        onShootTriggered()
+    end
+end)
+
+-- touch fire button mobile
+local function hookTouchFire()
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui", 10); if not playerGui then return end
+    local touchGui = playerGui:FindFirstChild("TouchGui"); if not touchGui then return end
+    local frame = touchGui:FindFirstChild("TouchControlFrame"); if not frame then return end
+    for _, btn in ipairs(frame:GetChildren()) do
+        if btn:IsA("GuiButton") and (btn.Name:lower():find("fire") or btn.Name:lower():find("shoot")) then
+            btn.InputBegan:Connect(function(inp)
+                if inp.UserInputType == Enum.UserInputType.Touch then onShootTriggered() end
+            end)
+        end
+    end
+    frame.ChildAdded:Connect(function(child)
+        if child:IsA("GuiButton") and (child.Name:lower():find("fire") or child.Name:lower():find("shoot")) then
+            child.InputBegan:Connect(function(inp)
+                if inp.UserInputType == Enum.UserInputType.Touch then onShootTriggered() end
+            end)
+        end
+    end)
+end
+task.spawn(hookTouchFire)
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(2); task.spawn(hookTouchFire)
+end)
+
+-- loop maintain FOV + apply lock dalam window shoot
 RunService.RenderStepped:Connect(function()
     -- FOV circle visual
     if State.fovCircle then
@@ -914,30 +1006,15 @@ RunService.RenderStepped:Connect(function()
             State.fovCircle.Visible = false
         end
     end
+
     if not State.AimbotEnabled then return end
-    local myRoot = getHRP()
-    if not myRoot then return end
-    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-    local nearest, nearestDist = nil, math.huge
-    for _, plr in pairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer and plr.Character then
-            local head = plr.Character:FindFirstChild(State.AimbotTargetPart)
-            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
-            if head and hum and hum.Health > 0 then
-                local pos, onScreen = Camera:WorldToViewportPoint(head.Position)
-                if onScreen then
-                    local dist = (Vector2.new(pos.X, pos.Y) - screenCenter).Magnitude
-                    if dist < State.AimbotFov and dist < nearestDist then
-                        nearest = head
-                        nearestDist = dist
-                    end
-                end
-            end
-        end
-    end
-    if nearest then
-        local targetCFrame = CFrame.new(Camera.CFrame.Position, nearest.Position)
-        Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, State.AimSmooth)
+    -- hanya aktif dalam window setelah nembak
+    if os.clock() > State.ShootLockUntil then return end
+
+    local target = findNearestTarget()
+    if target then
+        local targetCFrame = CFrame.new(Camera.CFrame.Position, target.Position)
+        Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, 0.6)
     end
 end)
 
@@ -1048,9 +1125,11 @@ BypassTab:CreateButton({ Name = "Scan Sekarang", Callback = function()
 end })
 ReconSupportLabel = BypassTab:CreateLabel("Recon: belum dites")
 
--- AIMBOT TAB (Universal Hub v2 mapping)
+-- AIMBOT TAB (shoot-trigger mode)
 local AimTab = Window:CreateTab("Aimbot", 4483362458)
-AimTab:CreateSection("Aimbot — Smooth Lerp + FOV Circle")
+AimTab:CreateSection("Aimbot — Shoot Trigger")
+AimTab:CreateParagraph({ Title = "Cara Kerja",
+    Content = "Kamera bebas total selama lo gak nembak. Pas tap tombol tembak, kamera snap ke target terdekat di FOV, terus lock ~0.15 detik. Lepas = bebas lagi." })
 AimTab:CreateToggle({ Name = "Enable Aimbot", CurrentValue = false, Flag = "Aimbot",
     Callback = function(v) if v then startAimbot() else stopAimbot() end end })
 AimTab:CreateDropdown({
@@ -1058,12 +1137,14 @@ AimTab:CreateDropdown({
     CurrentOption = {"Head"}, MultipleOptions = false, Flag = "AimPart",
     Callback = function(opt) if opt and opt[1] then State.AimbotTargetPart = opt[1] end end,
 })
-AimTab:CreateSlider({ Name = "Aim FOV", Range = {50, 500}, Increment = 5, Suffix = "px",
+AimTab:CreateSlider({ Name = "FOV Radius", Range = {50, 500}, Increment = 5, Suffix = "px",
     CurrentValue = 150, Flag = "AimFov",
     Callback = function(v) State.AimbotFov = v end })
-AimTab:CreateSlider({ Name = "Aim Smooth", Range = {0.05, 1}, Increment = 0.01,
-    CurrentValue = 0.25, Flag = "AimSmooth",
-    Callback = function(v) State.AimSmooth = v end })
+AimTab:CreateSlider({ Name = "Lock Duration", Range = {0.05, 0.5}, Increment = 0.01,
+    Suffix = "s", CurrentValue = 0.15, Flag = "LockDur",
+    Callback = function(v) State.ShootLockDuration = v end })
+AimTab:CreateToggle({ Name = "Snap on Shoot (instant)", CurrentValue = true, Flag = "SnapOnShoot",
+    Callback = function(v) State.SnapOnShoot = v end })
 AimTab:CreateToggle({ Name = "Show FOV Circle", CurrentValue = true, Flag = "ShowFov",
     Callback = function(v) State.ShowFov = v end })
 AimTab:CreateColorPicker({ Name = "FOV Circle Color", Color = Color3.fromRGB(255, 255, 255), Flag = "AimColor",
@@ -1177,4 +1258,4 @@ LocalPlayer.CharacterAdded:Connect(function()
     if State.NoclipEnabled then startNoclip() end
 end)
 
-notify("ByVoid", "v5.3 aimbot swapped loaded")
+notify("ByVoid", "v5.4 shoot-trigger aimbot loaded")
