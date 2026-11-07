@@ -1,4 +1,4 @@
--- menu_compact.lua — Delta, versi pendek anti-kepotong
+-- menu_compact.lua — Delta, fixed MultiLine
 -- built by odil9 — discord.gg/xGDFJ29MmA
 
 local ok, err = pcall(function()
@@ -31,7 +31,9 @@ local ok, err = pcall(function()
     log.TextColor3 = Color3.fromRGB(200, 200, 200)
     log.Font = Enum.Font.Code
     log.TextSize = 11
-    log.Multiline = true
+    log.MultiLine = true -- INI YANG DIBENERIN (L kapital)
+    log.TextWrapped = true
+    log.ClearTextOnFocus = false
     log.TextXAlignment = Enum.TextXAlignment.Left
     log.TextYAlignment = Enum.TextYAlignment.Top
     log.TextEditable = false
@@ -141,7 +143,6 @@ end)
 
 if not ok then
     warn("[odil9] GAGAL BIKIN GUI:", err)
-    -- fallback tampilin error di layar
     local g = Instance.new("ScreenGui", gethui() or game:GetService("CoreGui"))
     local t = Instance.new("TextLabel", g)
     t.Size = UDim2.new(1, 0, 1, 0)
