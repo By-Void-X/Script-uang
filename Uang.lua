@@ -1,31 +1,34 @@
--- recon_menu.lua — Roblox Delta, mod menu + log copy
+-- menu_recon_probe.lua — Delta, recon + probe + log copy
 -- built by odil9 — discord.gg/xGDFJ29MmA
--- susunan: config, gui shell, log pane, tombol copy, recon engine, kait
+-- susunan: config, guard, gui shell, log pane, tombol, recon engine, probe engine, unload
 
 local Config = {
-    judul = "odil9 recon",
-    ukuran = UDim2.new(0, 420, 0, 520),
+    judul = "odil9 recon+probe",
+    ukuran = UDim2.new(0, 460, 0, 560),
     posisi = UDim2.new(0, 20, 0, 60),
     warna_bg = Color3.fromRGB(18, 16, 22),
     warna_aksen = Color3.fromRGB(255, 60, 180),
     warna_teks = Color3.fromRGB(230, 225, 235),
-    scan_services = { "ReplicatedStorage", "ReplicatedFirst", "Workspace", "Players", "StarterGui", "StarterPack" },
+    warna_tombol = Color3.fromRGB(40, 34, 48),
     max_kedalaman = 8,
     max_hasil = 2000,
+    timeout_invoke = 3,
+    cooldown_probe = 0.5,
 }
 
 if not getgenv then warn("[odil9] bukan executor") return end
 if not game:IsLoaded() then game.Loaded:Wait() end
+
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
-if not LocalPlayer then return end
+if not LocalPlayer then warn("[odil9] no LocalPlayer") return end
 
--- bersihin kalau udah pernah jalan
-if getgenv().odil9_menu_gui then getgenv().odil9_menu_gui:Destroy() end
+-- bersihin instance lama biar gak numpuk
+if getgenv().odil9_menu_unload then pcall(getgenv().odil9_menu_unload) end
 
 -- ===== GUI shell =====
 local gui = Instance.new("ScreenGui")
-gui.Name = "odil9_recon_menu"
+gui.Name = "odil9_recon_probe"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.Parent = (gethui and gethui()) or game:GetService("CoreGui")
@@ -56,17 +59,16 @@ judul.TextSize = 14
 judul.TextXAlignment = Enum.TextXAlignment.Left
 judul.Parent = frame
 
--- tombol baris atas
-local function tombol(nama, x, w, cb)
+local function buat_tombol(nama, x, w, cb)
     local b = Instance.new("TextButton")
     b.Size = UDim2.new(0, w, 0, 26)
     b.Position = UDim2.new(0, x, 0, 40)
-    b.BackgroundColor3 = Color3.fromRGB(40, 34, 48)
+    b.BackgroundColor3 = Config.warna_tombol
     b.BorderSizePixel = 0
     b.Text = nama
     b.TextColor3 = Config.warna_teks
     b.Font = Enum.Font.Code
-    b.TextSize = 13
+    b.TextSize = 12
     b.Parent = frame
     local s = Instance.new("UIStroke")
     s.Color = Config.warna_aksen
@@ -86,12 +88,12 @@ log_box.BorderSizePixel = 0
 log_box.Text = ""
 log_box.TextColor3 = Config.warna_teks
 log_box.Font = Enum.Font.Code
-log_box.TextSize = 12
+log_box.TextSize = 11
 log_box.TextXAlignment = Enum.TextXAlignment.Left
 log_box.TextYAlignment = Enum.TextYAlignment.Top
 log_box.MultiLine = true
 log_box.ClearTextOnFocus = false
-log_box.TextEditable = false -- read-only, tapi masih bisa select
+log_box.TextEditable = false
 log_box.Parent = frame
 
 local log_stroke = Instance.new("UIStroke")
@@ -100,9 +102,9 @@ log_stroke.Thickness = 1
 log_stroke.Transparency = 0.7
 log_stroke.Parent = log_box
 
--- buffer log: di-append ke tabel, di-flush ke TextBox biar gak lag tiap baris
 local log_buffer = {}
 local log_dirty = false
+local MAX_LOG = 5000
 
 local function flush_log()
     if not log_dirty then return end
@@ -111,54 +113,34 @@ local function flush_log()
 end
 
 local function tulis(...)
-    local parts = {}
-    for i = 1, select("#", ...) do
-        parts[i] = tostring(select(i, ...))
-    end
-    local line = table.concat(parts, " ")
-    table.insert(log_buffer, line)
-    if #log_buffer > 5000 then table.remove(log_buffer, 1) end -- batas: jangan bikin TextBox raksasa
+    local p = {}
+    for i = 1, select("#", ...) do p[i] = tostring(select(i, ...)) end
+    table.insert(log_buffer, table.concat(p, " "))
+    if #log_buffer > MAX_LOG then table.remove(log_buffer, 1) end
     log_dirty = true
 end
 getgenv().odil9_log = tulis
 
--- ===== Tombol copy =====
+-- ===== Tombol =====
 local function copy_semua()
+    flush_log()
     local teks = table.concat(log_buffer, "\n")
-    local ok = false
-    if setclipboard then
-        local p = pcall(setclipboard, teks)
-        ok = p
-    end
+    local ok = setclipboard and pcall(setclipboard, teks)
     if not ok then
-        -- fallback: fokus ke TextBox, user Ctrl+A Ctrl+C manual
         log_box:CaptureFocus()
         log_box.CursorPosition = #log_box.Text + 1
         log_box.SelectionStart = 1
-        tulis("[odil9] clipboard gak support, Ctrl+A lalu Ctrl+C manual")
+        print("[odil9] clipboard gak support, Ctrl+A lalu Ctrl+C manual")
     else
-        tulis("[odil9] " .. #log_buffer .. " baris ke-copy ke clipboard, uwu")
+        print("[odil9] " .. #log_buffer .. " baris ke-copy, uwu")
     end
+end
+
+local function clear_log()
+    log_buffer = {}
+    log_dirty = true
     flush_log()
 end
-
-local function export_json()
-    local data = getgenv().odil9_recon
-    if not data then tulis("[odil9] belum ada hasil scan"); flush_log(); return end
-    local ok, js = pcall(function()
-        return game:GetService("HttpService"):JSONEncode(data)
-    end)
-    if not ok then tulis("[odil9] JSONEncode gagal:", js); flush_log(); return end
-    table.insert(log_buffer, "=== JSON ===")
-    table.insert(log_buffer, js)
-    log_dirty = true
-    copy_semua()
-end
-
-tombol("Copy Semua", 10, 110, copy_semua)
-tombol("Scan Ulang", 128, 100, function() getgenv().odil9_scan_ulang() end)
-tombol("Export JSON", 236, 110, export_json)
-tombol("Clear Log", 354, 60, function() log_buffer = {}; log_dirty = true; flush_log() end)
 
 -- ===== Recon engine =====
 local Services = {
@@ -172,6 +154,7 @@ local Services = {
 
 local hasil = { remote = {}, part = {}, tool = {}, backdoor = {}, waktu = os.time() }
 local total_inst = 0
+local sedang_scan = false
 
 local function walk(inst, kedalaman, cb)
     if kedalaman > Config.max_kedalaman then return end
@@ -184,22 +167,34 @@ local function walk(inst, kedalaman, cb)
 end
 
 local function pindai()
+    if sedang_scan then
+        tulis("[odil9] scan masih jalan, tunggu")
+        flush_log()
+        return
+    end
+    sedang_scan = true
+
+    hasil.remote, hasil.part, hasil.tool, hasil.backdoor = {}, {}, {}, {}
+    total_inst = 0
+
     tulis("[odil9] === mulai scan ===")
     tulis("[odil9] waktu:", os.date("%H:%M:%S"))
-    tulis("[odil9] map:", game.PlaceId, "| game:", game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name or "?")
+    tulis("[odil9] map:", game.PlaceId)
 
     -- remote
-    for nama, svc in pairs(Services) do
+    for _, svc in pairs(Services) do
         pcall(function()
             walk(svc, 0, function(inst)
                 if inst:IsA("RemoteEvent") or inst:IsA("RemoteFunction") or inst:IsA("UnreliableRemoteEvent") then
+                    local nm = string.lower(inst.Name)
+                    local curiga = string.find(nm, "admin") or string.find(nm, "give") or
+                                   string.find(nm, "buy") or string.find(nm, "cash") or
+                                   string.find(nm, "reward") or string.find(nm, "donate") or false
                     table.insert(hasil.remote, {
                         path = inst:GetFullName(),
                         kelas = inst.ClassName,
-                        curiga = string.find(string.lower(inst.Name), "admin") or
-                                  string.find(string.lower(inst.Name), "give") or
-                                  string.find(string.lower(inst.Name), "buy") or
-                                  string.find(string.lower(inst.Name), "cash") or false,
+                        nama = inst.Name,
+                        curiga = curiga,
                     })
                 end
             end)
@@ -221,7 +216,7 @@ local function pindai()
                 if inst:FindFirstChildOfClass("ClickDetector") then table.insert(sifat, "ClickDetector") end
                 if inst:FindFirstChildOfClass("ProximityPrompt") then table.insert(sifat, "ProximityPrompt") end
                 if #sifat > 0 then
-                    table.insert(hasil.part, { path = inst:GetFullName(), sifat = sifat, pos = tostring(inst.Position) })
+                    table.insert(hasil.part, { path = inst:GetFullName(), sifat = sifat })
                 end
             end
         end)
@@ -231,14 +226,10 @@ local function pindai()
     -- tool
     pcall(function()
         walk(Services.StarterPack, 0, function(inst)
-            if inst:IsA("Tool") then
-                table.insert(hasil.tool, { path = inst:GetFullName(), nama = inst.Name })
-            end
+            if inst:IsA("Tool") then table.insert(hasil.tool, { path = inst:GetFullName(), nama = inst.Name }) end
         end)
         walk(LocalPlayer, 0, function(inst)
-            if inst:IsA("Tool") then
-                table.insert(hasil.tool, { path = inst:GetFullName(), nama = inst.Name, ditangan = true })
-            end
+            if inst:IsA("Tool") then table.insert(hasil.tool, { path = inst:GetFullName(), nama = inst.Name, ditangan = true }) end
         end)
     end)
     tulis("[odil9] tool:", #hasil.tool)
@@ -262,43 +253,163 @@ local function pindai()
     end)
     tulis("[odil9] backdoor sinyal:", #hasil.backdoor)
 
-    -- hook remote
-    local old
-    old = hookmetamethod(game, "__index", function(self, key)
-        if key == "FireServer" or key == "InvokeServer" then
-            local full = self:GetFullName()
-            tulis(("[odil9] %s -> %s"):format(key, full))
-            flush_log()
-        end
-        return old(self, key)
-    end)
-
-    tulis("[odil9] total instance di-walk:", total_inst)
+    tulis("[odil9] total instance:", total_inst)
     tulis("[odil9] === scan selesai ===")
-    tulis("[odil9] akses data: getgenv().odil9_recon")
-    tulis("[odil9] tombol 'Copy Semua' buat salin semua log")
     getgenv().odil9_recon = hasil
+    sedang_scan = false
     flush_log()
 end
 
-getgenv().odil9_scan_ulang = function()
-    hasil = { remote = {}, part = {}, tool = {}, backdoor = {}, waktu = os.time() }
-    log_buffer = {}
-    log_dirty = true
-    pindai()
+-- ===== Probe engine =====
+local probe_hasil = { catatan = {}, remote = {}, hdadmin = {} }
+getgenv().odil9_probe = probe_hasil
+
+local function probe_tulis(...)
+    local p = {}
+    for i = 1, select("#", ...) do p[i] = tostring(select(i, ...)) end
+    local line = table.concat(p, " ")
+    table.insert(probe_hasil.catatan, line)
+    tulis("[probe] " .. line)
 end
 
+local function resolve(path)
+    local node = game
+    for seg in string.gmatch(path, "[^%.]+") do
+        node = node and node:FindFirstChild(seg)
+    end
+    return node
+end
+
+local function invoke_aman(rf, ...)
+    if not rf or not rf:IsA("RemoteFunction") then return nil, "bukan RemoteFunction" end
+    local res, selesai = nil, false
+    task.spawn(function()
+        local ok, v = pcall(function() return rf:InvokeServer(...) end)
+        res = ok and v or ("ERR:" .. tostring(v))
+        selesai = true
+    end)
+    local t0 = os.clock()
+    while not selesai and (os.clock() - t0) < Config.timeout_invoke do task.wait(0.05) end
+    if not selesai then return nil, "timeout" end
+    return res
+end
+
+local function probe_buy()
+    local rem = resolve("ReplicatedStorage.Remotes")
+    if not rem then probe_tulis("Remotes gak ada"); return end
+    local dev = rem:FindFirstChild("BuyDevProduct")
+    local single = rem:FindFirstChild("BuySingleProduct")
+    if dev then
+        local skema = { {0}, {1}, {"1"}, {1,1}, {0,1}, { {productId=1} }, {} }
+        for i, args in ipairs(skema) do
+            local r, err = invoke_aman(dev, table.unpack(args))
+            probe_tulis(("[probe] BuyDevProduct skema#%d -> %s"):format(i, tostring(r or err)))
+            if type(r) == "table" then
+                for k, v in pairs(r) do probe_tulis("[probe]   " .. tostring(k) .. "=" .. tostring(v)) end
+                probe_hasil.remote.BuyDevProduct = r
+                break
+            end
+            task.wait(Config.cooldown_probe)
+        end
+    end
+    if single then
+        local r, err = invoke_aman(single, "1", 1)
+        probe_tulis("[probe] BuySingleProduct('1',1) -> " .. tostring(r or err))
+        probe_hasil.remote.BuySingleProduct = r
+    end
+end
+
+local function probe_dance()
+    local rem = resolve("ReplicatedStorage.Remotes")
+    if not rem then return end
+    local gained = rem:FindFirstChild("DanceGained")
+    local play   = rem:FindFirstChild("PlayDance")
+    local sync   = rem:FindFirstChild("DanceSyncRequest")
+    if gained then
+        for _, arg in ipairs({ "Default", "Troll", "Dance1", "Emote" }) do
+            pcall(function() gained:FireServer(arg) end)
+            probe_tulis("[probe] DanceGained fire arg=" .. arg)
+            task.wait(Config.cooldown_probe)
+        end
+    end
+    if play then
+        pcall(function() play:FireServer("Troll") end)
+        probe_tulis("[probe] PlayDance fire('Troll')")
+    end
+    if sync then
+        local r, err = invoke_aman(sync)
+        probe_tulis("[probe] DanceSyncRequest -> " .. tostring(r or err))
+    end
+end
+
+local function probe_hdadmin()
+    local hd = resolve("ReplicatedStorage.HDAdminHDClient.Signals")
+    if not hd then probe_tulis("HDAdmin gak ada"); return end
+
+    local ranks = invoke_aman(hd:FindFirstChild("RetrieveServerRanks"))
+    probe_tulis("[probe] RetrieveServerRanks -> " .. (type(ranks) == "table" and (#ranks .. " entri") or tostring(ranks)))
+    if type(ranks) == "table" then
+        for _, e in ipairs(ranks) do probe_tulis("[probe]   rank:", tostring(e)) end
+        probe_hasil.hdadmin.ranks = ranks
+    end
+
+    local rc = hd:FindFirstChild("RequestCommand")
+    if rc then
+        local r, err = invoke_aman(rc, "help")
+        probe_tulis("[probe] RequestCommand('help') -> " .. tostring(r or err))
+        probe_hasil.hdadmin.help = r or err
+    end
+
+    local bc = hd:FindFirstChild("BecomeControlled")
+    if bc then
+        pcall(function() bc:FireServer() end)
+        probe_tulis("[probe] BecomeControlled fire — cek UI")
+    end
+
+    local ec = hd:FindFirstChild("ExecuteClientCommand")
+    if ec then
+        pcall(function() ec:FireServer("help") end)
+        probe_tulis("[probe] ExecuteClientCommand('help')")
+    end
+end
+
+local function jalankan_probe()
+    probe_hasil = { catatan = {}, remote = {}, hdadmin = {} }
+    getgenv().odil9_probe = probe_hasil
+    probe_tulis("=== mulai probe ===")
+    probe_tulis("map:", game.PlaceId)
+    probe_buy()
+    probe_dance()
+    probe_hdadmin()
+    probe_tulis("=== probe selesai ===")
+    flush_log()
+end
+
+-- ===== Wire tombol =====
+buat_tombol("Copy", 10, 70, copy_semua)
+buat_tombol("Scan", 88, 70, function() task.spawn(pindai) end)
+buat_tombol("Probe", 166, 70, function() task.spawn(jalankan_probe) end)
+buat_tombol("Scan+Probe", 244, 110, function() task.spawn(function() pindai(); jalankan_probe() end) end)
+buat_tombol("Clear", 362, 70, clear_log)
+
 getgenv().odil9_menu_gui = gui
+getgenv().odil9_scan_ulang = function() task.spawn(pindai) end
+getgenv().odil9_jalankan_probe = function() task.spawn(jalankan_probe) end
+
+-- auto scan pas load
 task.spawn(pindai)
 
--- teardown
+-- ===== Unload =====
 getgenv().odil9_menu_unload = function()
     gui:Destroy()
     getgenv().odil9_menu_gui = nil
     getgenv().odil9_log = nil
     getgenv().odil9_scan_ulang = nil
+    getgenv().odil9_jalankan_probe = nil
     getgenv().odil9_menu_unload = nil
+    getgenv().odil9_recon = nil
+    getgenv().odil9_probe = nil
     print("[odil9] menu di-unload, absolute larp")
 end
 
-print("[odil9] menu kepasang — absolute larp, made by @odil9, join: discord.gg/xGDFJ29MmA")
+print("[odil9] menu kepasang — Scan, Probe, Copy. absolute larp, made by @odil9, join: discord.gg/xGDFJ29MmA")
